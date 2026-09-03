@@ -18,6 +18,13 @@ English | [简体中文](README.md)
 
 ---
 
+<div align="center">
+  <img src="docs/images/dashboard.png" alt="Antigravity Proxy Dashboard UI" width="880" style="border-radius: 10px; box-shadow: 0 8px 24px rgba(0,0,0,0.15);" />
+  <p><i>Antigravity Proxy Modern 6-Card Dashboard & Client Configuration Center</i></p>
+</div>
+
+---
+
 ## 📖 Overview
 
 **Antigravity Proxy** is a lightweight, zero-configuration local API gateway that transforms your authenticated Google Antigravity CLI (`agy`) into a standard **OpenAI-compatible Chat Completions API** (`http://127.0.0.1:8765/v1`).

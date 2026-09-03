@@ -18,6 +18,13 @@
 
 ---
 
+<div align="center">
+  <img src="docs/images/dashboard.png" alt="Antigravity Proxy 控制台界面" width="880" style="border-radius: 10px; box-shadow: 0 8px 24px rgba(0,0,0,0.15);" />
+  <p><i>Antigravity Proxy 现代化 6 联监控面板与客户端配置中心</i></p>
+</div>
+
+---
+
 ## 📖 简介
 
 **Antigravity Proxy** 是一款轻量、极速、零配置的本地反代工具。它将本机已登录授权的 Google Antigravity 官方命令行（`agy`）转换为标准 **OpenAI Chat Completions API**（`http://127.0.0.1:8765/v1`）。

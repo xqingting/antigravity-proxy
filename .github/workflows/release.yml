@@ -59,6 +59,4 @@ jobs:
             ### 校验与依赖
             - 本地需安装官方 `agy` CLI 工具并完成登录。
             - 本地需具备 Python 3.10+ 环境。
-          releaseDraft: false
-          prerelease: false
           args: ${{ matrix.args }}
