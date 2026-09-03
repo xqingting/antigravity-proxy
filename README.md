@@ -138,7 +138,7 @@ stop.bat
 ### 方式二：使用原生桌面客户端（带仪表盘看板）
 
 前往 [Releases](https://github.com/xqingting/antigravity-proxy/releases) 页面下载对应安装包：
-- **macOS**：下载 `Antigravity Proxy_1.0.0_aarch64.dmg`（或 Intel 架构安装包），拖入 Applications 即可使用。
+- **macOS**：下载 `Antigravity Proxy_1.0.0_aarch64.dmg`（挂载后拖入 Applications 即可使用）。
 - **Windows**：下载 `Antigravity.Proxy_1.0.0_x64-setup.exe` 安装。
 
 运行后，界面将提供：
@@ -146,6 +146,20 @@ stop.bat
 - 6 联 Token 与调用性能看板
 - 真流式打字机连通性测试区
 - 最近调用记录与实时运行日志
+
+---
+
+### 方式三：作为 Antigravity Agent Skill 技能使用 🤖
+
+如果你正在使用 Google Antigravity IDE 或 `agy` 智能编程助手，可以直接将本项目作为**标准化 Skill 技能**安装，使 AI Agent 能够自动为你管理代理、检查状态与配置客户端：
+
+```bash
+# 全局安装 Skill（所有项目生效）
+mkdir -p ~/.gemini/config/skills
+git clone https://github.com/xqingting/skill-antigravity-proxy.git ~/.gemini/config/skills/antigravity-proxy
+```
+
+* 独立技能仓库：[**https://github.com/xqingting/skill-antigravity-proxy**](https://github.com/xqingting/skill-antigravity-proxy)
 
 ---
 
