@@ -1,0 +1,2 @@
+# 本项目零第三方依赖！
+# 仅使用 Python 3.8+ 内置标准库 (http.server, subprocess, json, threading)

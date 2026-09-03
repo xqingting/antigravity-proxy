@@ -1,0 +1,256 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Antigravity Proxy 控制台</title>
+    <link rel="stylesheet" href="/src/style.css" />
+  </head>
+  <body>
+    <div class="app-container">
+      <!-- 顶部标题栏 -->
+      <header class="app-header">
+        <div class="header-left">
+          <img src="/app-icon.svg" class="app-logo" alt="Antigravity Logo" />
+          <div class="status-indicator" id="statusIndicator"></div>
+          <div>
+            <h1 class="app-title">Antigravity Proxy</h1>
+            <p class="app-subtitle" id="statusText">正在检查服务状态...</p>
+          </div>
+        </div>
+        <div class="header-actions">
+          <button id="toggleBtn" class="btn btn-primary" type="button">启动服务</button>
+          <button id="restartBtn" class="btn btn-secondary" type="button">重启</button>
+        </div>
+      </header>
+
+      <!-- 主要内容区域 -->
+      <main class="app-main">
+        <!-- 统计监控仪表盘卡片 (6 联专业看板) -->
+        <section class="card stats-dashboard-card">
+          <div class="card-header">
+            <div class="header-title-group">
+              <h2 class="card-title">用量监控与性能仪表盘</h2>
+              <span class="live-badge" id="statsLiveBadge">● 实时监听</span>
+            </div>
+            <div class="stats-actions">
+              <span class="stats-active-hint" id="activeRequestsHint">当前排队: 0 / 并发上限: 5</span>
+              <button class="btn btn-sm btn-ghost" id="resetStatsBtn" type="button">重置统计</button>
+            </div>
+          </div>
+
+          <div class="stats-grid">
+            <!-- 1. 输入 Token 总数 -->
+            <div class="stat-card">
+              <div class="stat-icon">📥</div>
+              <div class="stat-content">
+                <span class="stat-label">输入 Token 总数 (Prompt)</span>
+                <div class="stat-value-group">
+                  <span class="stat-number accent-in" id="statTotalPromptTokens">0</span>
+                  <span class="stat-unit">tokens</span>
+                </div>
+                <div class="stat-meta">上下文历史与系统指令输入</div>
+              </div>
+            </div>
+
+            <!-- 2. 输出 Token 总数 -->
+            <div class="stat-card">
+              <div class="stat-icon">📤</div>
+              <div class="stat-content">
+                <span class="stat-label">输出 Token 总数 (Completion)</span>
+                <div class="stat-value-group">
+                  <span class="stat-number accent-out" id="statTotalCompletionTokens">0</span>
+                  <span class="stat-unit">tokens</span>
+                </div>
+                <div class="stat-meta">大模型实际生成的文本量</div>
+              </div>
+            </div>
+
+            <!-- 3. 累计消耗 Token 总量 -->
+            <div class="stat-card">
+              <div class="stat-icon">🪙</div>
+              <div class="stat-content">
+                <span class="stat-label">累计消耗 Token 总量</span>
+                <div class="stat-value-group">
+                  <span class="stat-number" id="statTotalTokens">0</span>
+                  <span class="stat-unit">tokens</span>
+                </div>
+                <div class="stat-meta">输入 + 输出累计总消耗</div>
+              </div>
+            </div>
+
+            <!-- 4. 调用总次数 & 成功率 -->
+            <div class="stat-card">
+              <div class="stat-icon">📊</div>
+              <div class="stat-content">
+                <span class="stat-label">总调用次数 / 成功率</span>
+                <div class="stat-value-group">
+                  <span class="stat-number" id="statTotalRequests">0</span>
+                  <span class="stat-sub-tag success" id="statSuccessRate">100% 成功</span>
+                </div>
+                <div class="stat-meta" id="statReqDetail">成功 0 · 失败 0</div>
+              </div>
+            </div>
+
+            <!-- 5. 平均 Token 速率 (TPS) -->
+            <div class="stat-card">
+              <div class="stat-icon">⚡</div>
+              <div class="stat-content">
+                <span class="stat-label">平均生成速率 (TPS)</span>
+                <div class="stat-value-group">
+                  <span class="stat-number accent" id="statAvgTps">0.0</span>
+                  <span class="stat-unit">tokens/s</span>
+                </div>
+                <div class="stat-meta">Gemini 3.8 Flash 极速流</div>
+              </div>
+            </div>
+
+            <!-- 6. 平均响应耗时 -->
+            <div class="stat-card">
+              <div class="stat-icon">⏱️</div>
+              <div class="stat-content">
+                <span class="stat-label">平均响应延迟</span>
+                <div class="stat-value-group">
+                  <span class="stat-number" id="statAvgDuration">0.0</span>
+                  <span class="stat-unit">s / 次</span>
+                </div>
+                <div class="stat-meta" id="statAvgMeta">最大并发: 5 路并行</div>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <!-- 配置信息卡片 -->
+        <section class="card info-card">
+          <div class="card-header">
+            <h2 class="card-title">客户端通用配置 (OpenAI 兼容)</h2>
+            <button class="btn btn-sm btn-ghost" id="copyAllConfigBtn" type="button">一键复制全套配置</button>
+          </div>
+
+          <div class="endpoint-grid">
+            <!-- 1. Base URL -->
+            <div class="endpoint-item">
+              <div class="endpoint-label-row">
+                <span class="endpoint-label">API Base URL</span>
+                <span class="endpoint-hint">通用根地址</span>
+              </div>
+              <div class="endpoint-input-wrap">
+                <input type="text" id="baseUrlInput" value="http://127.0.0.1:8765/v1" readonly />
+                <button class="btn-copy" id="copyBaseUrlBtn" title="复制 Base URL">复制</button>
+              </div>
+            </div>
+
+            <!-- 2. API Key -->
+            <div class="endpoint-item">
+              <div class="endpoint-label-row">
+                <span class="endpoint-label">API Key</span>
+                <span class="endpoint-hint badge-pill">免密 · 任意填写均可</span>
+              </div>
+              <div class="endpoint-input-wrap">
+                <input type="text" id="apiKeyInput" value="sk-antigravity-local" readonly />
+                <button class="btn-copy" id="copyApiKeyBtn" title="复制 API Key">复制</button>
+              </div>
+            </div>
+
+            <!-- 3. Model ID -->
+            <div class="endpoint-item">
+              <div class="endpoint-label-row">
+                <span class="endpoint-label">模型名称 (Model ID)</span>
+                <span class="endpoint-hint badge-pill">支持 gpt-4o 等主流别名自动映射</span>
+              </div>
+              <div class="endpoint-input-wrap">
+                <input type="text" id="modelInput" value="gemini-3.8-flash" readonly />
+                <button class="btn-copy" id="copyModelBtn" title="复制模型名称">复制</button>
+              </div>
+            </div>
+          </div>
+
+          <div class="params-row">
+            <div class="param-tag"><span>端口:</span> <strong id="portVal">8765</strong></div>
+            <div class="param-tag"><span>默认思考级别:</span> <strong>High</strong></div>
+            <div class="param-tag"><span>最大本地并发:</span> <strong style="color: var(--accent-color);">5 (超额自动排队)</strong></div>
+            <div class="param-tag"><span>AGY 引擎版本:</span> <strong id="agyVersion">检测中...</strong></div>
+          </div>
+        </section>
+
+        <!-- API 测试卡片 -->
+        <section class="card test-card">
+          <div class="card-header">
+            <h2 class="card-title">一键连通性测试</h2>
+            <div class="test-header-meta">
+              <label class="toggle-control" title="开启打字机流式输出">
+                <input type="checkbox" id="streamToggle" checked />
+                <span class="toggle-text">SSE 实时流式输出</span>
+              </label>
+              <span class="test-duration" id="testDuration"></span>
+            </div>
+          </div>
+
+          <div class="test-form">
+            <input
+              type="text"
+              id="testPromptInput"
+              class="input-prompt"
+              value="用一句话向我打个招呼，并介绍你是谁。"
+              placeholder="输入测试 Prompt..."
+            />
+            <button id="sendTestBtn" class="btn btn-accent" type="button">测试调用</button>
+          </div>
+
+          <div class="test-result-box" id="testResultBox" style="display: none;">
+            <div class="result-header">
+              <span class="result-title">Gemini 3.8 Flash 回复：</span>
+              <span class="result-meta" id="resultMeta"></span>
+            </div>
+            <div class="result-content" id="resultContent"></div>
+          </div>
+        </section>
+
+        <!-- 最近调用记录卡片 -->
+        <section class="card history-card">
+          <div class="card-header">
+            <h2 class="card-title">最近调用明细 (Recent Requests)</h2>
+            <span class="history-count" id="historyCount">显示最近 0 条调用</span>
+          </div>
+          <div class="table-container">
+            <table class="history-table">
+              <thead>
+                <tr>
+                  <th>时间</th>
+                  <th>模型</th>
+                  <th>类型</th>
+                  <th>耗时</th>
+                  <th>Token 用量 (入 / 出 / 总计)</th>
+                  <th>生成速率 (TPS)</th>
+                  <th>状态</th>
+                </tr>
+              </thead>
+              <tbody id="historyTableBody">
+                <tr>
+                  <td colspan="7" class="empty-hint">暂无调用记录，发起任意请求即可实时呈现。</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </section>
+
+        <!-- 实时日志卡片 -->
+        <section class="card log-card">
+          <div class="card-header">
+            <h2 class="card-title">运行日志</h2>
+            <button id="refreshLogsBtn" class="btn btn-sm btn-ghost" type="button">刷新日志</button>
+          </div>
+          <pre class="log-viewport" id="logViewport">正在连接服务日志...</pre>
+        </section>
+      </main>
+
+      <!-- 底部状态栏 -->
+      <footer class="app-footer">
+        <span>支持 Boss 人审助手 / Cursor / NextChat / 任意 OpenAI 兼容客户端</span>
+        <button id="copyCurlBtn" class="btn-link" type="button">复制 cURL 测试命令</button>
+      </footer>
+    </div>
+
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

@@ -1,0 +1,128 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
+  <defs>
+    <!-- 背景渐变：深邃星空钛黑 -->
+    <linearGradient id="bgGrad" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#181B26"/>
+      <stop offset="50%" stop-color="#0E111A"/>
+      <stop offset="100%" stop-color="#06070B"/>
+    </linearGradient>
+
+    <!-- 边框微光 -->
+    <linearGradient id="borderGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#00F2FE" stop-opacity="0.6"/>
+      <stop offset="40%" stop-color="#4FACFE" stop-opacity="0.2"/>
+      <stop offset="80%" stop-color="#7B2CBF" stop-opacity="0.4"/>
+      <stop offset="100%" stop-color="#00F2FE" stop-opacity="0.8"/>
+    </linearGradient>
+
+    <!-- 主能量环渐变 (青蓝 -> 紫罗兰) -->
+    <linearGradient id="neonCyanPurple" x1="0%" y1="100%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#00F2FE"/>
+      <stop offset="45%" stop-color="#4FACFE"/>
+      <stop offset="80%" stop-color="#8A2BE2"/>
+      <stop offset="100%" stop-color="#DA22FF"/>
+    </linearGradient>
+
+    <!-- 反向渐变 -->
+    <linearGradient id="purplePink" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#00F2FE"/>
+      <stop offset="60%" stop-color="#7928CA"/>
+      <stop offset="100%" stop-color="#FF0080"/>
+    </linearGradient>
+
+    <!-- 核心光晕滤镜 -->
+    <radialGradient id="coreGlow" cx="50%" cy="50%" r="50%">
+      <stop offset="0%" stop-color="#00F2FE" stop-opacity="0.45"/>
+      <stop offset="40%" stop-color="#7928CA" stop-opacity="0.2"/>
+      <stop offset="100%" stop-color="#000000" stop-opacity="0"/>
+    </radialGradient>
+
+    <radialGradient id="sphereGrad" cx="35%" cy="30%" r="70%">
+      <stop offset="0%" stop-color="#E0FFFF"/>
+      <stop offset="25%" stop-color="#00F2FE"/>
+      <stop offset="65%" stop-color="#4FACFE"/>
+      <stop offset="90%" stop-color="#1E1B4B"/>
+      <stop offset="100%" stop-color="#0A0826"/>
+    </radialGradient>
+
+    <!-- 拟物化玻璃顶部高光 -->
+    <linearGradient id="glassGloss" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#FFFFFF" stop-opacity="0.15"/>
+      <stop offset="40%" stop-color="#FFFFFF" stop-opacity="0.03"/>
+      <stop offset="100%" stop-color="#FFFFFF" stop-opacity="0"/>
+    </linearGradient>
+
+    <!-- 阴影滤镜 -->
+    <filter id="glowFilter" x="-50%" y="-50%" width="200%" height="200%">
+      <feGaussianBlur in="SourceGraphic" stdDeviation="16" result="blur"/>
+      <feMerge>
+        <feMergeNode in="blur"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+
+    <filter id="heavyGlow" x="-50%" y="-50%" width="200%" height="200%">
+      <feGaussianBlur stdDeviation="30" result="blur2"/>
+      <feGaussianBlur stdDeviation="10" result="blur1"/>
+      <feMerge>
+        <feMergeNode in="blur2"/>
+        <feMergeNode in="blur1"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+
+    <!-- 柔和阴影 -->
+    <filter id="shadowFilter" x="-10%" y="-10%" width="120%" height="120%">
+      <feDropShadow dx="0" dy="24" stdDeviation="28" flood-color="#000000" flood-opacity="0.55"/>
+    </filter>
+  </defs>
+
+  <!-- macOS 圆角图标外框 (Squircle 824x824, 居中) -->
+  <g filter="url(#shadowFilter)">
+    <rect x="100" y="100" width="824" height="824" rx="190" ry="190" fill="url(#bgGrad)"/>
+    <rect x="101" y="101" width="822" height="822" rx="189" ry="189" fill="none" stroke="url(#borderGrad)" stroke-width="3" opacity="0.9"/>
+  </g>
+
+  <!-- 内部背景环境光球 -->
+  <circle cx="512" cy="512" r="360" fill="url(#coreGlow)"/>
+
+  <!-- 顶部微弱玻璃光泽 -->
+  <path d="M 100 290 C 100 185, 185 100, 290 100 L 734 100 C 839 100, 924 185, 924 290 L 924 450 C 700 520, 324 500, 100 450 Z" fill="url(#glassGloss)"/>
+
+  <!-- 反重力引力透镜 / 轨道环 1 (倾斜 30度) -->
+  <g transform="translate(512, 512) rotate(-28) scale(1, 0.42)">
+    <ellipse cx="0" cy="0" rx="340" ry="340" fill="none" stroke="url(#neonCyanPurple)" stroke-width="26" filter="url(#glowFilter)" stroke-dasharray="1400 40 200 40" stroke-linecap="round"/>
+  </g>
+
+  <!-- 反重力引力透镜 / 轨道环 2 (倾斜 65度，微调透视) -->
+  <g transform="translate(512, 512) rotate(48) scale(1, 0.38)">
+    <ellipse cx="0" cy="0" rx="310" ry="310" fill="none" stroke="url(#purplePink)" stroke-width="18" filter="url(#glowFilter)" stroke-dasharray="1100 80 150 50" stroke-linecap="round"/>
+  </g>
+
+  <!-- 浮空粒子 (反重力向上漂浮感) -->
+  <circle cx="420" cy="310" r="6" fill="#00F2FE" filter="url(#glowFilter)"/>
+  <circle cx="610" cy="270" r="5" fill="#DA22FF" filter="url(#glowFilter)"/>
+  <circle cx="340" cy="450" r="4" fill="#4FACFE" opacity="0.8"/>
+  <circle cx="680" cy="420" r="7" fill="#00F2FE" opacity="0.75" filter="url(#glowFilter)"/>
+  <circle cx="490" cy="220" r="8" fill="#FFFFFF" filter="url(#glowFilter)"/>
+
+  <!-- 核心浮空量子球体 (The Antigravity Singularity) -->
+  <g filter="url(#heavyGlow)">
+    <circle cx="512" cy="500" r="120" fill="url(#sphereGrad)"/>
+    <!-- 高光斑点 -->
+    <ellipse cx="460" cy="445" rx="38" ry="24" transform="rotate(-30 460 445)" fill="#FFFFFF" opacity="0.85"/>
+    <circle cx="475" cy="435" r="12" fill="#FFFFFF" opacity="0.95"/>
+  </g>
+
+  <!-- 浮空象征符号：悬浮的'A'型反重力指针 (Chevron / Inverted Delta) -->
+  <g filter="url(#glowFilter)">
+    <!-- 向上升力的引力箭头 / A 符号 -->
+    <path d="M 512 375 L 590 540 L 555 540 L 512 445 L 469 540 L 434 540 Z" fill="#FFFFFF" opacity="0.95"/>
+    <!-- 横向引力束 -->
+    <rect x="465" y="495" width="94" height="10" rx="5" fill="#00F2FE"/>
+  </g>
+
+  <!-- 底部微字标：AGY -->
+  <text x="512" y="785" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'SF Pro Display', 'Helvetica Neue'" font-size="44" font-weight="800" fill="#E2E8F0" letter-spacing="14" opacity="0.85">ANTIGRAVITY</text>
+  <text x="512" y="825" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Helvetica Neue'" font-size="20" font-weight="600" fill="#00F2FE" letter-spacing="6" opacity="0.9">LOCAL AI PROXY</text>
+</svg>
