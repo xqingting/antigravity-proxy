@@ -149,20 +149,6 @@ stop.bat
 
 ---
 
-### 方式三：作为 Antigravity Agent Skill 技能使用 🤖
-
-如果你正在使用 Google Antigravity IDE 或 `agy` 智能编程助手，可以直接将本项目作为**标准化 Skill 技能**安装，使 AI Agent 能够自动为你管理代理、检查状态与配置客户端：
-
-```bash
-# 全局安装 Skill（所有项目生效）
-mkdir -p ~/.gemini/config/skills
-git clone https://github.com/xqingting/skill-antigravity-proxy.git ~/.gemini/config/skills/antigravity-proxy
-```
-
-* 独立技能仓库：[**https://github.com/xqingting/skill-antigravity-proxy**](https://github.com/xqingting/skill-antigravity-proxy)
-
----
-
 ## 🔌 客户端配置指南
 
 启动代理后，在任何支持 OpenAI 格式的软件中填入：

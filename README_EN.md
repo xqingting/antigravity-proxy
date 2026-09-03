@@ -108,20 +108,6 @@ Download pre-built binaries from the [Releases](https://github.com/xqingting/ant
 
 ---
 
-### Option 3: Use as an Official Antigravity Agent Skill 🤖
-
-If you use Google Antigravity IDE or the `agy` CLI assistant, you can install Antigravity Proxy directly as a **standardized Agent Skill**:
-
-```bash
-# Global installation (recommended for all workspaces)
-mkdir -p ~/.gemini/config/skills
-git clone https://github.com/xqingting/skill-antigravity-proxy.git ~/.gemini/config/skills/antigravity-proxy
-```
-
-* Dedicated Skill Repository: [**https://github.com/xqingting/skill-antigravity-proxy**](https://github.com/xqingting/skill-antigravity-proxy)
-
----
-
 ## 🔌 Client Configuration
 
 Point your AI applications to:
