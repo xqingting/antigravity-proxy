@@ -3,13 +3,13 @@
  * Antigravity Live Metrics Injector (极速长连接 + 毫秒级预缓存守护进程)
  * 
  * 核心特性：
- * 1. 【New Conversation 统计概览】：
+ * 1. 【New Conversation 统计概览 + 3.8 Flash 等价额度】：
  *    - 实时计算累计对话数、今日 Token 消耗、近 7 天消耗、历史总消耗。
- *    - 在用户进入新建会话页面时优雅呈现。
+ *    - 基于 Gemini 3.8 Flash 定价（输入 $0.10/M，输出 $0.40/M，汇率 7.25）计算等价额度（美元/人民币）。
  * 2. 【会话底部指标】：
  *    - 轮数、步数、平均 token 速率、缓存命中率、上下文输入/输出 token。
  * 3. 【全量极速预加载】：
- *    - 启动时长连接直接推送全量数据到前端内存，切页 0ms 展现。
+ *    - 启动时长连接直接推送全量数据到前端内存与 LocalStorage，切页 0ms 展现。
  * 4. 【文件变动事件响应】：
  *    - fs.watch 实时感知日志写入，毫秒级推送增量。
  */
@@ -123,7 +123,7 @@ function buildAllConversationsCache() {
   return result;
 }
 
-// 计算 New Conversation 页面所需的全局大盘统计
+// 计算 New Conversation 页面所需的全局大盘统计与等价额度
 function computeGlobalStats() {
   const brain = BRAIN_DIR;
   const now = new Date();
@@ -191,19 +191,39 @@ function computeGlobalStats() {
       }
     }
 
+    // 3.8 Flash 定价标准：输入 $0.10/1M tokens，输出 $0.40/1M tokens，汇率 7.25
+    const inputRate = 0.10 / 1000000;
+    const outputRate = 0.40 / 1000000;
+    const usdToCny = 7.25;
+
+    const allTimeCostUSD = (allTimeIn * inputRate) + (allTimeOut * outputRate);
+    const allTimeCostCNY = allTimeCostUSD * usdToCny;
+
+    const todayCostUSD = (todayIn * inputRate) + (todayOut * outputRate);
+    const todayCostCNY = todayCostUSD * usdToCny;
+
+    const weekCostUSD = (weekIn * inputRate) + (weekOut * outputRate);
+    const weekCostCNY = weekCostUSD * usdToCny;
+
     return {
       totalConvs,
       todayConvs: todayConvs.size,
       todayTokens: todayIn + todayOut,
       todayInTokens: todayIn,
       todayOutTokens: todayOut,
+      todayCostUSD: Number(todayCostUSD.toFixed(3)),
+      todayCostCNY: Number(todayCostCNY.toFixed(2)),
       weekConvs: weekConvs.size,
       weekTokens: weekIn + weekOut,
       weekInTokens: weekIn,
       weekOutTokens: weekOut,
+      weekCostUSD: Number(weekCostUSD.toFixed(3)),
+      weekCostCNY: Number(weekCostCNY.toFixed(2)),
       allTimeTokens: allTimeIn + allTimeOut,
       allTimeInTokens: allTimeIn,
       allTimeOutTokens: allTimeOut,
+      allTimeCostUSD: Number(allTimeCostUSD.toFixed(2)),
+      allTimeCostCNY: Number(allTimeCostCNY.toFixed(2)),
     };
   } catch (err) {
     return null;
@@ -263,13 +283,13 @@ async function maintainConnection() {
       const count = Object.keys(allStats).length;
       evaluateInBrowser(`window.__updateMetricsData && window.__updateMetricsData(${JSON.stringify(allStats)});`);
 
-      // 3. 预推送全局大盘统计数据（用于 New Conversation 页面）
+      // 3. 预推送全局大盘统计数据（含 3.8 Flash 等价额度）
       const globalStats = computeGlobalStats();
       if (globalStats) {
         evaluateInBrowser(`window.__updateGlobalStats && window.__updateGlobalStats(${JSON.stringify(globalStats)});`);
       }
 
-      console.log(`   ⚡ 已向页面预加载 ${count} 个对话统计与全局大盘数据，切页将实现 0ms 瞬间展示！`);
+      console.log(`   ⚡ 已向页面预加载 ${count} 个对话统计与 3.8 Flash 等价额度大盘，切页实现 0ms 瞬显！`);
     });
 
     ws.addEventListener('close', () => {
@@ -285,7 +305,7 @@ async function maintainConnection() {
   }
 }
 
-// 监听本地 brain 目录变动（有任何会话新生成或更新时，即时推送）
+// 监听本地 brain 目录变动
 try {
   if (fs.existsSync(BRAIN_DIR)) {
     let watchDebounce = null;
@@ -313,7 +333,7 @@ try {
 
 console.log('====================================================');
 console.log('🚀 Antigravity 全局与单会话双模统计守护已启动');
-console.log('✨ 支持 New Conversation 大盘卡片 + 活跃会话状态栏');
+console.log('✨ 支持 New Conversation 大盘卡片 + 3.8 Flash 等价额度');
 console.log('====================================================');
 
 maintainConnection();

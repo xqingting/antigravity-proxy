@@ -4,6 +4,7 @@ on:
   push:
     tags:
       - 'v*'
+  workflow_dispatch:
 
 jobs:
   build-tauri:
@@ -15,8 +16,10 @@ jobs:
         include:
           - platform: 'macos-latest'
             args: '--target aarch64-apple-darwin'
+            target: 'aarch64-apple-darwin'
           - platform: 'windows-latest'
             args: ''
+            target: 'x86_64-pc-windows-msvc'
 
     runs-on: ${{ matrix.platform }}
 
@@ -37,7 +40,7 @@ jobs:
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
         with:
-          targets: ${{ matrix.platform == 'macos-latest' && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}
+          targets: ${{ matrix.target }}
 
       - name: Install Frontend Dependencies
         run: pnpm install
@@ -49,14 +52,4 @@ jobs:
         with:
           tagName: ${{ github.ref_name }}
           releaseName: 'Antigravity Proxy ${{ github.ref_name }}'
-          releaseBody: |
-            ## 🚀 Antigravity Proxy ${{ github.ref_name }}
-            
-            ### 安装指南
-            - **macOS (Apple Silicon / M 系列芯片)**: 下载并安装 `.dmg` 文件。
-            - **Windows (x64)**: 下载并运行 `.exe` (NSIS) 安装程序。
-            
-            ### 校验与依赖
-            - 本地需安装官方 `agy` CLI 工具并完成登录。
-            - 本地需具备 Python 3.10+ 环境。
           args: ${{ matrix.args }}
