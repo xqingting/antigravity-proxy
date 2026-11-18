@@ -32,7 +32,7 @@ import time
 import uuid
 from typing import Any, Generator
 
-DEFAULT_HOST = "127.0.0.1"
+DEFAULT_HOST = "0.0.0.0"
 DEFAULT_PORT = 8765
 DEFAULT_TIMEOUT_SECONDS = 120.0
 DEFAULT_MODEL = "gemini-3.8-flash"
