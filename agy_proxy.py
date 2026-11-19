@@ -410,6 +410,7 @@ def run_agy_stream_generator(
         "stream-json",
         "--output-format",
         "stream-json",
+        "--disable-slash-commands",
     ]
 
     if final_model:
@@ -417,7 +418,13 @@ def run_agy_stream_generator(
     if final_effort:
         cmd.extend(["--effort", final_effort])
 
-    cwd = workspace or os.getcwd()
+    # 规范工作目录，避免把 .app 资源目录作为工作空间
+    if workspace and os.path.isdir(workspace) and "Contents/Resources" not in workspace:
+        cwd = workspace
+    else:
+        home_ws = pathlib.Path.home() / ".gemini" / "antigravity-cli" / "workspace"
+        home_ws.mkdir(parents=True, exist_ok=True)
+        cwd = str(home_ws)
 
     popen_options: dict[str, Any] = {}
     if os.name != "nt":
@@ -462,12 +469,16 @@ def run_agy_stream_generator(
     estimated_prompt_tokens = max(1, len(prompt) // 2)
     usage_info["prompt_tokens"] = estimated_prompt_tokens
 
-    # 智能超时控制：首包响应超时 + 流式活跃刷新 + 总时长防护
-    last_activity = t_start
-    has_received_data = False
-    ttft_timeout = max(timeout, 240.0)  # 首包等待时间放宽至至少 240s，容纳超大 Prompt 吸收和深度思考
-    inactivity_timeout = 90.0  # 流式输出中若连续 90s 无新输出则判定中断
-    max_hard_deadline = t_start + max(timeout * 2, 600.0)  # 整体最长总保护上限 (10分钟)
+    # 智能超时控制：
+    # 1. 首字等待超时 (TTFT)：面对 6 万+ 超大 Prompt 吸收和 High 深度思考，放宽至至少 360s (6分钟)
+    ttft_timeout = max(timeout, 360.0)
+    # 2. 流式活跃空闲超时：一旦开始吐字，只要在持续输出就不杀；若中途连续停滞 120s 无新字才判定断流
+    chunk_inactivity_timeout = 120.0
+    # 3. 极端总时长兜底上限：放宽至 1800s (30分钟，看齐 Hermes Gateway 默认最长时限)
+    max_hard_deadline = t_start + max(timeout * 3, 1800.0)
+
+    has_received_first_token = False
+    last_token_time = t_start
 
     try:
         while True:
@@ -476,14 +487,14 @@ def run_agy_stream_generator(
                 _safe_terminate_proc(proc)
                 raise TimeoutError(f"Antigravity CLI 执行达到单请求总时长上限 ({round(now - t_start, 1)}s)")
 
-            if not has_received_data:
+            if not has_received_first_token:
                 if (now - t_start) > ttft_timeout:
                     _safe_terminate_proc(proc)
-                    raise TimeoutError(f"Antigravity CLI 响应等待超时 ({round(now - t_start, 1)}s)")
+                    raise TimeoutError(f"Antigravity CLI 响应等待超时 ({round(now - t_start, 1)}s，未收到模型首字)")
             else:
-                if (now - last_activity) > inactivity_timeout:
+                if (now - last_token_time) > chunk_inactivity_timeout:
                     _safe_terminate_proc(proc)
-                    raise TimeoutError(f"Antigravity CLI 流式传输中断 (超过 {inactivity_timeout}s 无新数据)")
+                    raise TimeoutError(f"Antigravity CLI 流式传输中断 (连续 {chunk_inactivity_timeout}s 无新 Token 输出)")
 
             line = proc.stdout.readline() if proc.stdout else ""
             if not line:
@@ -495,9 +506,6 @@ def run_agy_stream_generator(
             line = line.strip()
             if not line:
                 continue
-
-            last_activity = time.monotonic()
-            has_received_data = True
 
             try:
                 event_obj = json.loads(line)
@@ -518,6 +526,8 @@ def run_agy_stream_generator(
                         usage_info["total_tokens"] = usage.get("total_tokens", usage_info["total_tokens"])
 
                     if isinstance(delta, str) and delta:
+                        has_received_first_token = True
+                        last_token_time = time.monotonic()
                         collected_fragments.append(delta)
                         yield ("delta", delta, usage_info, None)
 
@@ -837,8 +847,9 @@ class AgyProxyHandler(http.server.BaseHTTPRequestHandler):
                 model=final_model,
                 is_stream=True,
                 duration=time.monotonic() - t_start,
-                prompt_tokens=0,
-                completion_tokens=0,
+                prompt_tokens=final_usage.get("prompt_tokens", 0) or max(1, len(prompt) // 2),
+                completion_tokens=final_usage.get("completion_tokens", 0),
+                cached_tokens=final_usage.get("cached_tokens", 0),
                 status="timeout",
                 error_msg=str(e),
             )
@@ -900,7 +911,7 @@ class AgyProxyHandler(http.server.BaseHTTPRequestHandler):
                 model=final_model,
                 is_stream=False,
                 duration=time.monotonic() - t_start,
-                prompt_tokens=0,
+                prompt_tokens=max(1, len(prompt) // 2),
                 completion_tokens=0,
                 status="timeout",
                 error_msg=str(e),
