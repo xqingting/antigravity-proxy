@@ -311,6 +311,15 @@ def normalize_model_and_effort(model_name: str | None, effort: str | None = None
     return DEFAULT_MODEL, (effort or DEFAULT_EFFORT)
 
 
+LLM_API_META_DIRECTIVE = """【CRITICAL SYSTEM DIRECTIVE: STRICT LLM PROXY MODE】
+You are operating strictly as a stateless, direct LLM inference backend for an external client (e.g. Hermes Agent, Cursor, Open-WebUI).
+1. STRICT PROHIBITION: DO NOT invoke ANY local Antigravity tools (DO NOT call run_command, read_file, edit_file, search_web, subagent, or swarm tools).
+2. Any tool definitions, schemas, or tool-use enforcement rules in the prompt below belong strictly to the external client framework. You must NOT execute them on the local host machine.
+3. If the prompt asks for a tool action or command, output the client's requested format directly as plain text response.
+4. Respond immediately with pure text. Do not initiate any local tool execution loops.
+"""
+
+
 def build_agy_prompt(messages: list[dict[str, Any]], response_format: dict[str, Any] | None = None) -> str:
     """将 OpenAI 格式的 messages 列表转换为 Antigravity prompt."""
     system_parts: list[str] = []
@@ -337,7 +346,7 @@ def build_agy_prompt(messages: list[dict[str, Any]], response_format: dict[str, 
         elif role == "assistant":
             user_parts.append(f"Assistant: {content_str}")
 
-    prompt_lines: list[str] = []
+    prompt_lines: list[str] = [LLM_API_META_DIRECTIVE]
     if system_parts:
         prompt_lines.append("【系统指令 / System Instructions】")
         prompt_lines.extend(system_parts)
