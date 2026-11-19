@@ -32,12 +32,23 @@ import time
 import uuid
 from typing import Any, Generator
 
+# 确保在被后台服务/App重定向到日志文件时实时逐行刷新，避免缓冲区延迟
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(line_buffering=True)
+if hasattr(sys.stderr, "reconfigure"):
+    sys.stderr.reconfigure(line_buffering=True)
+
 DEFAULT_HOST = "0.0.0.0"
 DEFAULT_PORT = 8765
 DEFAULT_TIMEOUT_SECONDS = float(os.environ.get("AGY_PROXY_TIMEOUT") or os.environ.get("AGY_TIMEOUT") or 300.0)
 DEFAULT_MODEL = "gemini-3.8-flash"
 DEFAULT_EFFORT = "high"
 DEFAULT_MAX_CONCURRENCY = 5
+DEFAULT_HERMES_IPS: set[str] = {
+    ip.strip()
+    for ip in (os.environ.get("HERMES_IPS") or "192.168.6.192").split(",")
+    if ip.strip()
+}
 
 CORS_HEADERS = {
     "Access-Control-Allow-Origin": "*",
@@ -320,7 +331,11 @@ You are operating strictly as a stateless, direct LLM inference backend for an e
 """
 
 
-def build_agy_prompt(messages: list[dict[str, Any]], response_format: dict[str, Any] | None = None) -> str:
+def build_agy_prompt(
+    messages: list[dict[str, Any]],
+    response_format: dict[str, Any] | None = None,
+    inject_hermes_directive: bool = False,
+) -> str:
     """将 OpenAI 格式的 messages 列表转换为 Antigravity prompt."""
     system_parts: list[str] = []
     user_parts: list[str] = []
@@ -346,7 +361,10 @@ def build_agy_prompt(messages: list[dict[str, Any]], response_format: dict[str, 
         elif role == "assistant":
             user_parts.append(f"Assistant: {content_str}")
 
-    prompt_lines: list[str] = [LLM_API_META_DIRECTIVE]
+    prompt_lines: list[str] = []
+    # 仅当请求来源是 Hermes 智能体时，注入防止执行本地系统工具的 LLM API 元指令
+    if inject_hermes_directive:
+        prompt_lines.append(LLM_API_META_DIRECTIVE)
     if system_parts:
         prompt_lines.append("【系统指令 / System Instructions】")
         prompt_lines.extend(system_parts)
@@ -613,6 +631,33 @@ class AgyProxyHandler(http.server.BaseHTTPRequestHandler):
     default_model: str = DEFAULT_MODEL
     default_effort: str = DEFAULT_EFFORT
     workspace: str = os.getcwd()
+    hermes_ips: set[str] = DEFAULT_HERMES_IPS.copy()
+
+    def _get_client_ip(self) -> str:
+        """从请求头或 socket 连接中提取客户端真实 IP."""
+        xff = self.headers.get("X-Forwarded-For")
+        if xff:
+            return xff.split(",")[0].strip()
+        x_real = self.headers.get("X-Real-IP")
+        if x_real:
+            return x_real.strip()
+        if self.client_address and len(self.client_address) > 0:
+            return str(self.client_address[0])
+        return ""
+
+    def _is_hermes_client(self, client_ip: str) -> bool:
+        """判断请求是否来自 Hermes 智能体 (根据 IP 来源或协议特征)."""
+        # 1. 严格检查 IP 地址匹配 (例如 NAS IP: 192.168.6.192)
+        if client_ip and client_ip in self.hermes_ips:
+            return True
+        # 2. 检查特定请求头
+        ua = self.headers.get("User-Agent", "").lower()
+        if "hermes" in ua:
+            return True
+        x_client = self.headers.get("X-Client", "").lower()
+        if "hermes" in x_client:
+            return True
+        return False
 
     def log_message(self, format: str, *args: Any) -> None:
         timestamp = dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -638,6 +683,7 @@ class AgyProxyHandler(http.server.BaseHTTPRequestHandler):
                 "service": "antigravity-proxy",
                 "default_model": self.default_model,
                 "default_effort": self.default_effort,
+                "hermes_ips": sorted(list(self.hermes_ips)),
                 "max_concurrency": stats["max_concurrency"],
                 "agy_path": self.agy_bin,
                 "agy_version": version,
@@ -743,7 +789,15 @@ class AgyProxyHandler(http.server.BaseHTTPRequestHandler):
                     pass
         effective_timeout = float(custom_timeout) if custom_timeout else self.timeout
 
-        prompt = build_agy_prompt(messages, response_format)
+        client_ip = self._get_client_ip()
+        is_hermes = self._is_hermes_client(client_ip)
+
+        if is_hermes:
+            print(f"[Proxy] [Hermes防护] 来源确认为 Hermes 智能体 ({client_ip})，已注入纯 LLM 推理防护指令 (拦截本地工具调用死循环)")
+        else:
+            print(f"[Proxy] 来源为常规客户端 ({client_ip or '本地'})，保持原生 Prompt (未添加防御指令)")
+
+        prompt = build_agy_prompt(messages, response_format, inject_hermes_directive=is_hermes)
         final_model, _ = normalize_model_and_effort(model, effort)
 
         GLOBAL_STATS.record_start()
@@ -999,6 +1053,7 @@ def start_server(
     max_concurrency: int = DEFAULT_MAX_CONCURRENCY,
     custom_agy: str | None = None,
     workspace: str | None = None,
+    hermes_ips: set[str] | None = None,
 ) -> None:
     global CONCURRENCY_SEMAPHORE
     CONCURRENCY_SEMAPHORE = threading.BoundedSemaphore(max(1, max_concurrency))
@@ -1006,6 +1061,7 @@ def start_server(
 
     agy_bin = find_agy_binary(custom_agy)
     version = get_agy_version(agy_bin)
+    effective_hermes_ips = set(hermes_ips) if hermes_ips is not None else DEFAULT_HERMES_IPS.copy()
 
     print("=" * 68)
     print("🚀 Antigravity 通用本地 OpenAI 兼容 API 代理服务 (生产增强版)")
@@ -1014,6 +1070,7 @@ def start_server(
     print(f"🌐 对应端点:      http://{host}:{port}/v1/chat/completions")
     print(f"📊 统计端点:      http://{host}:{port}/v1/stats")
     print(f"🤖 默认模型:      {model} (effort: {effort})")
+    print(f"🛡️ Hermes 防护 IP: {', '.join(sorted(effective_hermes_ips)) if effective_hermes_ips else '未配置'}")
     print(f"⚡ 最大本地并发:  {max_concurrency} (5 路安全排队)")
     print(f"🔧 AGY 路径:      {agy_bin} ({version})")
     print(f"📁 工作空间:      {workspace or os.getcwd()}")
@@ -1032,6 +1089,7 @@ def start_server(
     ConfiguredHandler.default_model = model
     ConfiguredHandler.default_effort = effort
     ConfiguredHandler.workspace = workspace or os.getcwd()
+    ConfiguredHandler.hermes_ips = effective_hermes_ips
 
     server = ThreadingHTTPServer((host, port), ConfiguredHandler)
     try:
@@ -1052,8 +1110,25 @@ def main() -> None:
     parser.add_argument("-t", "--timeout", type=float, default=DEFAULT_TIMEOUT_SECONDS, help="单次请求超时秒数")
     parser.add_argument("--agy-bin", default=None, help="指定 agy 命令行程序绝对路径")
     parser.add_argument("--workspace", default=None, help="指定工作目录")
+    parser.add_argument(
+        "--hermes-ip",
+        action="append",
+        default=None,
+        help="指定 Hermes 客户端 IP 地址 (可多次指定或逗号分隔，默认: 192.168.6.192)",
+    )
 
     args = parser.parse_args()
+
+    hermes_ips = DEFAULT_HERMES_IPS.copy()
+    if args.hermes_ip:
+        custom_ips = set()
+        for item in args.hermes_ip:
+            for ip in item.split(","):
+                if ip.strip():
+                    custom_ips.add(ip.strip())
+        if custom_ips:
+            hermes_ips = custom_ips
+
     start_server(
         host=args.host,
         port=args.port,
@@ -1063,6 +1138,7 @@ def main() -> None:
         max_concurrency=args.max_concurrency,
         custom_agy=args.agy_bin,
         workspace=args.workspace,
+        hermes_ips=hermes_ips,
     )
 
 
