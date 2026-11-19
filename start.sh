@@ -5,7 +5,8 @@ set -e
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PORT="${1:-8765}"
 MODEL="${2:-gemini-3.8-flash}"
-EFFORT="${3:-high}"
+EFFORT="${3:-medium}"
+TIMEOUT="${4:-300}"
 
 PID_FILE="$DIR/.proxy.pid"
 LOG_FILE="$DIR/proxy.log"
@@ -20,8 +21,8 @@ if [ -f "$PID_FILE" ]; then
     fi
 fi
 
-echo "🚀 正在启动 Antigravity 通用代理服务 (端口: $PORT, 默认模型: $MODEL, 思考级别: $EFFORT)..."
-nohup python3 "$DIR/agy_proxy.py" --port "$PORT" --model "$MODEL" --effort "$EFFORT" --max-concurrency 5 > "$LOG_FILE" 2>&1 &
+echo "🚀 正在启动 Antigravity 通用代理服务 (端口: $PORT, 默认模型: $MODEL, 思考级别: $EFFORT, 超时: ${TIMEOUT}s)..."
+nohup python3 "$DIR/agy_proxy.py" --port "$PORT" --model "$MODEL" --effort "$EFFORT" --timeout "$TIMEOUT" --max-concurrency 5 > "$LOG_FILE" 2>&1 &
 NEW_PID=$!
 echo "$NEW_PID" > "$PID_FILE"
 

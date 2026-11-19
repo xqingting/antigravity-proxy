@@ -2,16 +2,12 @@
 /**
  * Antigravity Live Metrics Injector (极速长连接 + 毫秒级预缓存守护进程)
  * 
- * 核心特性：
- * 1. 【New Conversation 统计概览 + 3.8 Flash 等价额度】：
- *    - 实时计算累计对话数、今日 Token 消耗、近 7 天消耗、历史总消耗。
- *    - 基于 Gemini 3.8 Flash 定价（输入 $0.10/M，输出 $0.40/M，汇率 7.25）计算等价额度（美元/人民币）。
- * 2. 【会话底部指标】：
- *    - 轮数、步数、平均 token 速率、缓存命中率、上下文输入/输出 token。
- * 3. 【全量极速预加载】：
- *    - 启动时长连接直接推送全量数据到前端内存与 LocalStorage，切页 0ms 展现。
- * 4. 【文件变动事件响应】：
- *    - fs.watch 实时感知日志写入，毫秒级推送增量。
+ * 官方标准费率（Gemini 3.8 Flash）：
+ * - 未命中输入 (Uncached Input): $0.75 / 1M tokens
+ * - 缓存命中输入 (Cached Input, 90% 折扣): $0.075 / 1M tokens
+ * - 输出生成 (Output Tokens): $3.75 / 1M tokens
+ * 
+ * 严格按美元计费，不进行汇率折算。
  */
 
 import fs from 'node:fs';
@@ -65,28 +61,39 @@ function parseSingleTranscript(convId) {
       }
     }
 
-    const inTokens = Math.max(5000, Math.round(inChars / 1.5 + (rounds * 22000)));
-    const outTokens = Math.max(1, Math.round((outChars + thinkingChars) / 1.6));
-
-    const timestamps = lines
-      .filter(l => l.created_at)
-      .map(l => ({ type: l.type, time: new Date(l.created_at).getTime() }));
-
     let totalLlmSec = 0;
-    let lastUserTime = null;
-    for (const item of timestamps) {
-      if (item.type === 'USER_INPUT') {
-        lastUserTime = item.time;
-      } else if (item.type === 'PLANNER_RESPONSE' && lastUserTime) {
-        const delta = (item.time - lastUserTime) / 1000;
-        if (delta > 0 && delta < 600) totalLlmSec += delta;
-        lastUserTime = null;
+    for (let i = 1; i < lines.length; i++) {
+      const curr = lines[i];
+      const prev = lines[i - 1];
+
+      if (curr.type === 'PLANNER_RESPONSE' && curr.created_at && prev.created_at) {
+        const tCurr = new Date(curr.created_at).getTime();
+        const tPrev = new Date(prev.created_at).getTime();
+        const deltaSec = (tCurr - tPrev) / 1000;
+
+        const contentLen = (curr.content || '').length;
+        const thinkingLen = (curr.thinking || '').length;
+        const stepChars = contentLen + thinkingLen;
+
+        if (stepChars > 0) {
+          if (deltaSec >= 1 && deltaSec <= 180) {
+            totalLlmSec += deltaSec;
+          } else if (deltaSec === 0) {
+            // 同秒级事件（时间戳无毫秒）估算真实合理耗时
+            totalLlmSec += Math.max(1, Math.round(stepChars / 250));
+          }
+        }
       }
     }
 
-    const tokPerSec = (totalLlmSec > 2 && outTokens > 0)
-      ? Math.min(160, Math.max(45, outTokens / totalLlmSec))
-      : 94.0;
+    const totalOutChars = outChars + thinkingChars;
+    const inTokens = Math.max(5000, Math.round(inChars / 1.5 + (rounds * 22000)));
+    const outTokens = Math.max(1, Math.round(totalOutChars / 1.6));
+
+    // 计算真实平均 TPS（不再人为限死）
+    const tokPerSec = (totalLlmSec > 0 && outTokens > 0)
+      ? Math.round(outTokens / totalLlmSec)
+      : 95;
 
     const cacheHitPct = Math.min(94, 75 + Math.round(rounds * 2.5));
 
@@ -105,7 +112,6 @@ function parseSingleTranscript(convId) {
   }
 }
 
-// 批量扫描并预计算所有会话
 function buildAllConversationsCache() {
   const result = {};
   if (!fs.existsSync(BRAIN_DIR)) return result;
@@ -123,7 +129,7 @@ function buildAllConversationsCache() {
   return result;
 }
 
-// 计算 New Conversation 页面所需的全局大盘统计与等价额度
+// 计算 New Conversation 页面所需的全局大盘统计与 3.8 Flash 官方额度（纯美元）
 function computeGlobalStats() {
   const brain = BRAIN_DIR;
   const now = new Date();
@@ -133,14 +139,17 @@ function computeGlobalStats() {
   let totalConvs = 0;
   let allTimeIn = 0;
   let allTimeOut = 0;
+  let allTimeCached = 0;
 
   let todayConvs = new Set();
   let todayIn = 0;
   let todayOut = 0;
+  let todayCached = 0;
 
   let weekConvs = new Set();
   let weekIn = 0;
   let weekOut = 0;
+  let weekCached = 0;
 
   if (!fs.existsSync(brain)) return null;
 
@@ -153,10 +162,10 @@ function computeGlobalStats() {
 
       totalConvs++;
       const raw = fs.readFileSync(logFile, 'utf-8');
-      const lines = raw.split('\n');
+      const lines = raw.split('\n').filter(Boolean);
 
+      let convTurns = 0;
       for (const line of lines) {
-        if (!line.trim()) continue;
         try {
           const d = JSON.parse(line);
           const t = d.type;
@@ -166,12 +175,21 @@ function computeGlobalStats() {
 
           let inTok = 0;
           let outTok = 0;
-          if (t === 'USER_INPUT') inTok = Math.round(c.length / 1.5) + 12000;
-          else if (t === 'PLANNER_RESPONSE') outTok = Math.round((c.length + th.length) / 1.6);
-          else if (t === 'TOOL_CALL' || t === 'TOOL_RESULT') inTok = Math.round(c.length / 1.8);
+          if (t === 'USER_INPUT') {
+            convTurns++;
+            inTok = Math.round(c.length / 1.5) + 12000;
+          } else if (t === 'PLANNER_RESPONSE') {
+            outTok = Math.round((c.length + th.length) / 1.6);
+          } else if (t === 'TOOL_CALL' || t === 'TOOL_RESULT') {
+            inTok = Math.round(c.length / 1.8);
+          }
+
+          // 第 1 轮为完整输入；第 2 轮起历史 Prompt 享受约 85% 缓存命中
+          const cachedTok = convTurns > 1 ? Math.round(inTok * 0.85) : 0;
 
           allTimeIn += inTok;
           allTimeOut += outTok;
+          allTimeCached += cachedTok;
 
           if (tsStr) {
             const date = new Date(tsStr);
@@ -179,11 +197,13 @@ function computeGlobalStats() {
             if (dateStr === todayStr) {
               todayIn += inTok;
               todayOut += outTok;
+              todayCached += cachedTok;
               todayConvs.add(id);
             }
             if (date >= sevenDaysAgo) {
               weekIn += inTok;
               weekOut += outTok;
+              weekCached += cachedTok;
               weekConvs.add(id);
             }
           }
@@ -191,19 +211,19 @@ function computeGlobalStats() {
       }
     }
 
-    // 3.8 Flash 定价标准：输入 $0.10/1M tokens，输出 $0.40/1M tokens，汇率 7.25
-    const inputRate = 0.10 / 1000000;
-    const outputRate = 0.40 / 1000000;
-    const usdToCny = 7.25;
+    // Gemini 3.8 Flash 官方定价标准：
+    // 未命中输入：$0.75 / 1M
+    // 缓存命中输入（90% 折扣）：$0.075 / 1M
+    // 输出生成：$3.75 / 1M
+    function calcCostUSD(inTok, cachedTok, outTok) {
+      const freshTok = Math.max(0, inTok - cachedTok);
+      const cost = (freshTok * 0.75 + cachedTok * 0.075 + outTok * 3.75) / 1000000;
+      return Number(cost.toFixed(2));
+    }
 
-    const allTimeCostUSD = (allTimeIn * inputRate) + (allTimeOut * outputRate);
-    const allTimeCostCNY = allTimeCostUSD * usdToCny;
-
-    const todayCostUSD = (todayIn * inputRate) + (todayOut * outputRate);
-    const todayCostCNY = todayCostUSD * usdToCny;
-
-    const weekCostUSD = (weekIn * inputRate) + (weekOut * outputRate);
-    const weekCostCNY = weekCostUSD * usdToCny;
+    const allTimeCostUSD = calcCostUSD(allTimeIn, allTimeCached, allTimeOut);
+    const todayCostUSD = calcCostUSD(todayIn, todayCached, todayOut);
+    const weekCostUSD = calcCostUSD(weekIn, weekCached, weekOut);
 
     return {
       totalConvs,
@@ -211,19 +231,17 @@ function computeGlobalStats() {
       todayTokens: todayIn + todayOut,
       todayInTokens: todayIn,
       todayOutTokens: todayOut,
-      todayCostUSD: Number(todayCostUSD.toFixed(3)),
-      todayCostCNY: Number(todayCostCNY.toFixed(2)),
+      todayCostUSD,
       weekConvs: weekConvs.size,
       weekTokens: weekIn + weekOut,
       weekInTokens: weekIn,
       weekOutTokens: weekOut,
-      weekCostUSD: Number(weekCostUSD.toFixed(3)),
-      weekCostCNY: Number(weekCostCNY.toFixed(2)),
+      weekCostUSD,
       allTimeTokens: allTimeIn + allTimeOut,
       allTimeInTokens: allTimeIn,
       allTimeOutTokens: allTimeOut,
-      allTimeCostUSD: Number(allTimeCostUSD.toFixed(2)),
-      allTimeCostCNY: Number(allTimeCostCNY.toFixed(2)),
+      allTimeCostUSD,
+      cachedPct: Math.round((allTimeCached / (allTimeIn || 1)) * 100),
     };
   } catch (err) {
     return null;
@@ -283,13 +301,13 @@ async function maintainConnection() {
       const count = Object.keys(allStats).length;
       evaluateInBrowser(`window.__updateMetricsData && window.__updateMetricsData(${JSON.stringify(allStats)});`);
 
-      // 3. 预推送全局大盘统计数据（含 3.8 Flash 等价额度）
+      // 3. 预推送全局大盘统计数据（含纯美元 Gemini 3.8 Flash 等价额度）
       const globalStats = computeGlobalStats();
       if (globalStats) {
         evaluateInBrowser(`window.__updateGlobalStats && window.__updateGlobalStats(${JSON.stringify(globalStats)});`);
       }
 
-      console.log(`   ⚡ 已向页面预加载 ${count} 个对话统计与 3.8 Flash 等价额度大盘，切页实现 0ms 瞬显！`);
+      console.log(`   ⚡ 已向页面预加载 ${count} 个对话统计与 3.8 Flash 官方定价大盘 ($${globalStats?.allTimeCostUSD})！`);
     });
 
     ws.addEventListener('close', () => {
@@ -333,7 +351,7 @@ try {
 
 console.log('====================================================');
 console.log('🚀 Antigravity 全局与单会话双模统计守护已启动');
-console.log('✨ 支持 New Conversation 大盘卡片 + 3.8 Flash 等价额度');
+console.log('✨ 纯美元标准费率：输入 $0.75 · 缓存 $0.075 · 输出 $3.75');
 console.log('====================================================');
 
 maintainConnection();

@@ -237,10 +237,12 @@ function initApp() {
 
           const tpsText = rec.tps > 0 ? `${rec.tps} tps` : '-'
           const tokensDetail = `${rec.prompt_tokens} / ${rec.completion_tokens} / <strong>${rec.total_tokens}</strong>`
+          const dateHtml = rec.date ? `<div class="history-date">${rec.date}</div>` : ''
+          const timeHtml = `<div class="history-time">${rec.timestamp}</div>`
 
           return `
             <tr>
-              <td>${rec.timestamp}</td>
+              <td>${dateHtml}${timeHtml}</td>
               <td>${rec.model}</td>
               <td>${typeBadge}</td>
               <td>${rec.duration}s</td>

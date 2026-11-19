@@ -5,7 +5,8 @@ setlocal enabledelayedexpansion
 set "DIR=%~dp0"
 set "PORT=8765"
 set "MODEL=gemini-3.8-flash"
-set "EFFORT=high"
+set "EFFORT=medium"
+set "TIMEOUT=300"
 set "MAX_CONCURRENCY=5"
 set "PID_FILE=%DIR%.proxy.pid"
 set "LOG_FILE=%DIR%proxy.log"
@@ -49,8 +50,8 @@ if exist "%PID_FILE%" (
     )
 )
 
-echo [启动中] 正在以端口 %PORT%、模型 %MODEL%、思考级别 %EFFORT%、最大并发 %MAX_CONCURRENCY% 启动...
-start /b "" %PY_CMD% "%DIR%agy_proxy.py" --port %PORT% --model %MODEL% --effort %EFFORT% --max-concurrency %MAX_CONCURRENCY% > "%LOG_FILE%" 2>&1
+echo [启动中] 正在以端口 %PORT%、模型 %MODEL%、思考级别 %EFFORT%、超时 %TIMEOUT%s、最大并发 %MAX_CONCURRENCY% 启动...
+start /b "" %PY_CMD% "%DIR%agy_proxy.py" --port %PORT% --model %MODEL% --effort %EFFORT% --timeout %TIMEOUT% --max-concurrency %MAX_CONCURRENCY% > "%LOG_FILE%" 2>&1
 
 :: 获取刚才启动的进程 PID 并写入 PID 文件
 timeout /t 1 /nobreak >nul

@@ -1,8 +1,9 @@
-# Antigravity Proxy - PowerShell 启动脚本
+﻿# Antigravity Proxy - PowerShell 启动脚本
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $Port = 8765
 $Model = "gemini-3.8-flash"
-$Effort = "high"
+$Effort = "medium"
+$Timeout = 300
 $MaxConcurrency = 5
 $PidFile = Join-Path $ScriptDir ".proxy.pid"
 $LogFile = Join-Path $ScriptDir "proxy.log"
@@ -47,6 +48,7 @@ $Args = @(
     "--port", $Port,
     "--model", $Model,
     "--effort", $Effort,
+    "--timeout", $Timeout,
     "--max-concurrency", $MaxConcurrency
 )
 

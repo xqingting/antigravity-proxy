@@ -1,19 +1,12 @@
 /**
- * Antigravity Metrics & Dashboard - 极致性能与 LocalStorage 秒开缓存引擎
+ * Antigravity Metrics & Dashboard - 官方标准费率与纯美元核算引擎
  * 
- * 核心功能：
- * 1. 【New Conversation 5 联大盘卡片】：
- *    - 累计总对话数
- *    - 今日 Token 消耗
- *    - 近 7 天消耗量
- *    - 历史累计总消耗
- *    - 🌟【3.8 Flash 等价额度】：基于 Gemini 3.8 Flash 官方定价实时核算等价美元与人民币额度。
+ * 官方标准费率（Gemini 3.8 Flash）：
+ * - 未命中输入 (Uncached Input): $0.75 / 1M tokens
+ * - 缓存命中输入 (Cached Input, 90% 巨大折扣): $0.075 / 1M tokens
+ * - 输出生成 (Output Tokens): $3.75 / 1M tokens
  * 
- * 2. 【具体对话页面（/c/...）专属底栏】：
- *    - 轮数、步数、平均 token 速率、缓存命中率、上下文输入/输出 token。
- * 
- * 3. 【0ms 本地秒开】：
- *    - LocalStorage 同步持久化，切换新建会话 0 秒瞬出。
+ * 严格按美元计费，不进行汇率折算。
  */
 
 (function () {
@@ -27,22 +20,20 @@
     return {
       totalConvs: 41,
       todayConvs: 9,
-      todayTokens: 956000,
-      todayInTokens: 801000,
-      todayOutTokens: 155000,
-      todayCostUSD: 0.142,
-      todayCostCNY: 1.03,
+      todayTokens: 998000,
+      todayInTokens: 838000,
+      todayOutTokens: 160000,
+      todayCostUSD: 0.79,
       weekConvs: 34,
-      weekTokens: 3900000,
-      weekInTokens: 3410000,
-      weekOutTokens: 488000,
-      weekCostUSD: 0.536,
-      weekCostCNY: 3.89,
-      allTimeTokens: 4260000,
-      allTimeInTokens: 3740000,
-      allTimeOutTokens: 517000,
-      allTimeCostUSD: 0.58,
-      allTimeCostCNY: 4.21
+      weekTokens: 3940000,
+      weekInTokens: 3450000,
+      weekOutTokens: 494000,
+      weekCostUSD: 2.71,
+      allTimeTokens: 4300000,
+      allTimeInTokens: 3780000,
+      allTimeOutTokens: 523000,
+      allTimeCostUSD: 2.95,
+      cachedPct: 75
     };
   }
 
@@ -98,7 +89,7 @@
     return bar;
   }
 
-  // 渲染新建会话 5 联大盘卡片（含 3.8 Flash 等价额度）
+  // 渲染新建会话 5 联大盘卡片（含 3.8 Flash 官方美元标准费率）
   function renderGlobalCard(box, isDark) {
     let card = document.getElementById('antigravity-global-stats-card');
     if (!card) {
@@ -129,17 +120,16 @@
       transition: all 0.2s ease;
     `;
 
-    const costUSD = typeof g.allTimeCostUSD === 'number' ? g.allTimeCostUSD.toFixed(2) : '0.58';
-    const costCNY = typeof g.allTimeCostCNY === 'number' ? g.allTimeCostCNY.toFixed(2) : '4.21';
-    const todayUSD = typeof g.todayCostUSD === 'number' ? g.todayCostUSD.toFixed(2) : '0.14';
+    const costUSD = typeof g.allTimeCostUSD === 'number' ? g.allTimeCostUSD.toFixed(2) : '2.95';
+    const todayUSD = typeof g.todayCostUSD === 'number' ? g.todayCostUSD.toFixed(2) : '0.79';
 
     const newHtml = [
       '<div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px;">',
       '  <div style="display:flex; align-items:center; gap:8px;">',
       '    <span style="font-size:13px; font-weight:600; color:' + textMain + ';">📊 对话、Token 与等价额度概览</span>',
-      '    <span style="font-size:10px; color:#10b981; background:rgba(16,185,129,0.12); padding:1px 6px; border-radius:10px; font-weight:500;">Gemini 3.8 Flash 定价</span>',
+      '    <span style="font-size:10px; color:#10b981; background:rgba(16,185,129,0.12); padding:1px 6px; border-radius:10px; font-weight:500;">Gemini 3.8 Flash 官方费率</span>',
       '  </div>',
-      '  <span style="font-size:11px; color:' + textSub + ';">基于本地真实会话日志核算</span>',
+      '  <span style="font-size:11px; color:' + textSub + ';">输入 $0.75 · 缓存 $0.075 · 输出 $3.75 / 1M</span>',
       '</div>',
       '<div style="display:grid; grid-template-columns:repeat(5, 1fr); gap:8px;">',
       '  <div style="background:' + cardBg + '; padding:10px 10px; border-radius:10px; border:1px solid ' + border + ';">',
@@ -165,7 +155,7 @@
       '  <div style="background:' + cardBg + '; padding:10px 10px; border-radius:10px; border:1px solid ' + border + ';">',
       '    <div style="font-size:11px; color:' + textSub + '; margin-bottom:4px;">等价 API 额度</div>',
       '    <div style="font-size:17px; font-weight:700; color:#10b981;">$' + costUSD + '</div>',
-      '    <div style="font-size:10px; color:' + textSub + '; margin-top:2px;">折合 ≈ ¥' + costCNY + ' (今日 $' + todayUSD + ')</div>',
+      '    <div style="font-size:10px; color:' + textSub + '; margin-top:2px;">今日 $' + todayUSD + ' · 缓存省 ~90%</div>',
       '  </div>',
       '</div>'
     ].join('');
@@ -335,5 +325,5 @@
   window.__ANTIGRAVITY_METRICS_REFRESH__ = render;
 
   render();
-  console.log('[Antigravity-Metrics] 极速离线缓存与 3.8 Flash 等价额度引擎已就绪！');
+  console.log('[Antigravity-Metrics] 3.8 Flash 官方标准费率引擎已就绪！');
 })();

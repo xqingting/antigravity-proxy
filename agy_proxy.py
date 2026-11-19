@@ -34,9 +34,9 @@ from typing import Any, Generator
 
 DEFAULT_HOST = "0.0.0.0"
 DEFAULT_PORT = 8765
-DEFAULT_TIMEOUT_SECONDS = 120.0
+DEFAULT_TIMEOUT_SECONDS = float(os.environ.get("AGY_PROXY_TIMEOUT") or os.environ.get("AGY_TIMEOUT") or 300.0)
 DEFAULT_MODEL = "gemini-3.8-flash"
-DEFAULT_EFFORT = "high"
+DEFAULT_EFFORT = "medium"
 DEFAULT_MAX_CONCURRENCY = 5
 
 CORS_HEADERS = {
@@ -136,6 +136,7 @@ class StatsTracker:
         duration: float,
         prompt_tokens: int,
         completion_tokens: int,
+        cached_tokens: int = 0,
         status: str,  # "success" | "error" | "timeout"
         error_msg: str | None = None,
     ) -> dict[str, Any]:
@@ -153,15 +154,18 @@ class StatsTracker:
 
             tps = round(completion_tokens / duration, 1) if duration > 0 and completion_tokens > 0 else 0.0
 
+            now = dt.datetime.now()
             record = {
                 "id": f"req-{uuid.uuid4().hex[:8]}",
-                "timestamp": dt.datetime.now().strftime("%H:%M:%S"),
-                "date": dt.datetime.now().strftime("%Y-%m-%d"),
+                "timestamp": now.strftime("%H:%M:%S"),
+                "date": now.strftime("%Y-%m-%d"),
+                "datetime": now.strftime("%Y-%m-%d %H:%M:%S"),
                 "model": model,
                 "is_stream": is_stream,
                 "duration": round(duration, 2),
                 "prompt_tokens": prompt_tokens,
                 "completion_tokens": completion_tokens,
+                "cached_tokens": cached_tokens,
                 "total_tokens": prompt_tokens + completion_tokens,
                 "tps": tps,
                 "status": status,
@@ -356,6 +360,33 @@ def build_agy_prompt(messages: list[dict[str, Any]], response_format: dict[str, 
 # ==============================================================================
 # 核心调用流式生成器
 # ==============================================================================
+def _safe_terminate_proc(proc: subprocess.Popen) -> None:
+    """平滑终止子进程及其派生的进程组，防止僵尸进程."""
+    try:
+        if os.name != "nt":
+            try:
+                pgid = os.getpgid(proc.pid)
+                os.killpg(pgid, 15)  # SIGTERM
+            except Exception:
+                proc.terminate()
+        else:
+            proc.terminate()
+
+        try:
+            proc.wait(timeout=1.5)
+        except Exception:
+            if os.name != "nt":
+                try:
+                    pgid = os.getpgid(proc.pid)
+                    os.killpg(pgid, 9)  # SIGKILL
+                except Exception:
+                    proc.kill()
+            else:
+                proc.kill()
+    except Exception:
+        pass
+
+
 def run_agy_stream_generator(
     agy_bin: str,
     prompt: str,
@@ -414,7 +445,7 @@ def run_agy_stream_generator(
             proc.stdin.flush()
             proc.stdin.close()
     except Exception as e:
-        proc.kill()
+        _safe_terminate_proc(proc)
         raise RuntimeError(f"向 agy 传递输入失败: {e}") from e
 
     collected_fragments: list[str] = []
@@ -431,13 +462,28 @@ def run_agy_stream_generator(
     estimated_prompt_tokens = max(1, len(prompt) // 2)
     usage_info["prompt_tokens"] = estimated_prompt_tokens
 
-    deadline = time.monotonic() + timeout
+    # 智能超时控制：首包响应超时 + 流式活跃刷新 + 总时长防护
+    last_activity = t_start
+    has_received_data = False
+    ttft_timeout = max(timeout, 240.0)  # 首包等待时间放宽至至少 240s，容纳超大 Prompt 吸收和深度思考
+    inactivity_timeout = 90.0  # 流式输出中若连续 90s 无新输出则判定中断
+    max_hard_deadline = t_start + max(timeout * 2, 600.0)  # 整体最长总保护上限 (10分钟)
 
     try:
         while True:
-            if time.monotonic() > deadline:
-                proc.kill()
-                raise TimeoutError(f"Antigravity CLI 执行超时 ({timeout}s)")
+            now = time.monotonic()
+            if now > max_hard_deadline:
+                _safe_terminate_proc(proc)
+                raise TimeoutError(f"Antigravity CLI 执行达到单请求总时长上限 ({round(now - t_start, 1)}s)")
+
+            if not has_received_data:
+                if (now - t_start) > ttft_timeout:
+                    _safe_terminate_proc(proc)
+                    raise TimeoutError(f"Antigravity CLI 响应等待超时 ({round(now - t_start, 1)}s)")
+            else:
+                if (now - last_activity) > inactivity_timeout:
+                    _safe_terminate_proc(proc)
+                    raise TimeoutError(f"Antigravity CLI 流式传输中断 (超过 {inactivity_timeout}s 无新数据)")
 
             line = proc.stdout.readline() if proc.stdout else ""
             if not line:
@@ -449,6 +495,9 @@ def run_agy_stream_generator(
             line = line.strip()
             if not line:
                 continue
+
+            last_activity = time.monotonic()
+            has_received_data = True
 
             try:
                 event_obj = json.loads(line)
@@ -489,15 +538,12 @@ def run_agy_stream_generator(
                     raise RuntimeError(f"Antigravity 执行返回错误: {err_msg}")
                 break
 
-        proc.wait(timeout=5)
-    except Exception:
         try:
-            if os.name != "nt":
-                os.killpg(os.getpgid(proc.pid), 9)
-            else:
-                proc.kill()
+            proc.wait(timeout=3)
         except Exception:
-            pass
+            _safe_terminate_proc(proc)
+    except Exception:
+        _safe_terminate_proc(proc)
         raise
 
     duration = time.monotonic() - t_start
@@ -668,6 +714,16 @@ class AgyProxyHandler(http.server.BaseHTTPRequestHandler):
         effort = req_data.get("effort") or self.default_effort
         response_format = req_data.get("response_format")
 
+        custom_timeout = req_data.get("timeout")
+        if not custom_timeout:
+            header_to = self.headers.get("X-Timeout")
+            if header_to:
+                try:
+                    custom_timeout = float(header_to)
+                except ValueError:
+                    pass
+        effective_timeout = float(custom_timeout) if custom_timeout else self.timeout
+
         prompt = build_agy_prompt(messages, response_format)
         final_model, _ = normalize_model_and_effort(model, effort)
 
@@ -682,13 +738,15 @@ class AgyProxyHandler(http.server.BaseHTTPRequestHandler):
                 print(f"[Proxy] 请求排队完成 (等待耗时: {queue_wait:.2f}s)")
 
             if is_stream:
-                self._handle_stream_completions(prompt, model, effort, final_model)
+                self._handle_stream_completions(prompt, model, effort, final_model, effective_timeout)
             else:
-                self._handle_block_completions(prompt, model, effort, final_model, response_format)
+                self._handle_block_completions(prompt, model, effort, final_model, response_format, effective_timeout)
         finally:
             CONCURRENCY_SEMAPHORE.release()
 
-    def _handle_stream_completions(self, prompt: str, model: str, effort: str, final_model: str) -> None:
+    def _handle_stream_completions(
+        self, prompt: str, model: str, effort: str, final_model: str, timeout: float
+    ) -> None:
         """处理 SSE 流式响应 (stream: true)."""
         response_id = f"chatcmpl-{uuid.uuid4().hex[:12]}"
         created_ts = int(time.time())
@@ -701,7 +759,7 @@ class AgyProxyHandler(http.server.BaseHTTPRequestHandler):
         self._send_cors_headers()
         self.end_headers()
 
-        print(f"[Proxy] -> 正在流式调用 Antigravity (模型: {final_model}, 字符数: {len(prompt)})...")
+        print(f"[Proxy] -> 正在流式调用 Antigravity (模型: {final_model}, 字符数: {len(prompt)}, 超时: {timeout}s)...")
         t_start = time.monotonic()
         final_usage = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0, "cached_tokens": 0, "thinking_tokens": 0}
         duration = 0.0
@@ -713,7 +771,7 @@ class AgyProxyHandler(http.server.BaseHTTPRequestHandler):
                 model=model,
                 effort=effort,
                 workspace=self.workspace,
-                timeout=self.timeout,
+                timeout=timeout,
             ):
                 if evt[0] == "delta":
                     delta_chunk = evt[1]
@@ -804,10 +862,16 @@ class AgyProxyHandler(http.server.BaseHTTPRequestHandler):
             self.wfile.flush()
 
     def _handle_block_completions(
-        self, prompt: str, model: str, effort: str, final_model: str, response_format: dict[str, Any] | None
+        self,
+        prompt: str,
+        model: str,
+        effort: str,
+        final_model: str,
+        response_format: dict[str, Any] | None,
+        timeout: float,
     ) -> None:
         """处理非流式完整响应."""
-        print(f"[Proxy] -> 正在调用 Antigravity (模型: {final_model}, 字符数: {len(prompt)})...")
+        print(f"[Proxy] -> 正在调用 Antigravity (模型: {final_model}, 字符数: {len(prompt)}, 超时: {timeout}s)...")
         t_start = time.monotonic()
 
         try:
@@ -817,7 +881,7 @@ class AgyProxyHandler(http.server.BaseHTTPRequestHandler):
                 model=model,
                 effort=effort,
                 workspace=self.workspace,
-                timeout=self.timeout,
+                timeout=timeout,
             )
             tps = round(usage.get("completion_tokens", 0) / duration, 1) if duration > 0 else 0.0
             print(f"[Proxy] <- 调用成功 (耗时: {duration:.2f}s, 入: {usage.get('prompt_tokens')}, 出: {usage.get('completion_tokens')}, 速率: {tps} tps)")
