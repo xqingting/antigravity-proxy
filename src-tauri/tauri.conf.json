@@ -29,6 +29,7 @@
   "bundle": {
     "active": true,
     "targets": ["app", "dmg", "nsis"],
+    "resources": ["../agy_proxy.py", "../stop.sh"],
     "category": "DeveloperTool",
     "shortDescription": "Antigravity Local OpenAI API Proxy",
     "icon": [

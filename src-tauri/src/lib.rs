@@ -33,23 +33,29 @@ pub struct ProxyManager {
 }
 
 fn get_project_dir() -> PathBuf {
-    // 1. 优先检查当前工作目录
-    if let Ok(cur) = std::env::current_dir() {
-        if cur.join("agy_proxy.py").exists() {
-            return cur;
-        }
-    }
-    // 2. 检查可执行文件同级或上级目录 (适应 macOS App 与 Windows 安装包)
+    // 1. 优先检查 macOS App bundle 内部 Resources 目录或同级
     if let Ok(exe_path) = std::env::current_exe() {
         if let Some(exe_dir) = exe_path.parent() {
             if exe_dir.join("agy_proxy.py").exists() {
                 return exe_dir.to_path_buf();
+            }
+            if let Some(contents_dir) = exe_dir.parent() {
+                let res_dir = contents_dir.join("Resources");
+                if res_dir.join("agy_proxy.py").exists() {
+                    return res_dir;
+                }
             }
             if let Some(bundle_dir) = exe_dir.parent().and_then(|p| p.parent()).and_then(|p| p.parent()) {
                 if bundle_dir.join("agy_proxy.py").exists() {
                     return bundle_dir.to_path_buf();
                 }
             }
+        }
+    }
+    // 2. 检查当前工作目录
+    if let Ok(cur) = std::env::current_dir() {
+        if cur.join("agy_proxy.py").exists() {
+            return cur;
         }
     }
     // 3. 开发者本地路径回退
@@ -156,7 +162,7 @@ mod commands {
             .arg("--model")
             .arg("gemini-3.8-flash")
             .arg("--effort")
-            .arg("medium")
+            .arg("high")
             .arg("--timeout")
             .arg("300")
             .arg("--max-concurrency")

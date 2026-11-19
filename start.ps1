@@ -2,7 +2,7 @@
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $Port = 8765
 $Model = "gemini-3.8-flash"
-$Effort = "medium"
+$Effort = "high"
 $Timeout = 300
 $MaxConcurrency = 5
 $PidFile = Join-Path $ScriptDir ".proxy.pid"

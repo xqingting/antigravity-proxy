@@ -5,7 +5,7 @@ set -e
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PORT="${1:-8765}"
 MODEL="${2:-gemini-3.8-flash}"
-EFFORT="${3:-medium}"
+EFFORT="${3:-high}"
 TIMEOUT="${4:-300}"
 
 PID_FILE="$DIR/.proxy.pid"

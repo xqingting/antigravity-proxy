@@ -5,7 +5,7 @@ setlocal enabledelayedexpansion
 set "DIR=%~dp0"
 set "PORT=8765"
 set "MODEL=gemini-3.8-flash"
-set "EFFORT=medium"
+set "EFFORT=high"
 set "TIMEOUT=300"
 set "MAX_CONCURRENCY=5"
 set "PID_FILE=%DIR%.proxy.pid"
