@@ -41,9 +41,11 @@ ENV/
 .venv/
 .pytest_cache/
 
-# Rust / Tauri
+# Rust / Tauri / SwiftPM
 src-tauri/target/
 src-tauri/target/*
+macos-app/.build/
+macos-app/.swiftpm/
 *.dmg
 *.app
 *.msi

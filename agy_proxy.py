@@ -355,6 +355,25 @@ You are serving strictly as the LLM intelligence engine for the external Hermes 
 """
 
 
+LOCAL_HERMES_DIRECTIVE_PATH = (
+    pathlib.Path(os.environ["AGY_HERMES_DIRECTIVE_FILE"]).expanduser()
+    if os.environ.get("AGY_HERMES_DIRECTIVE_FILE")
+    else (pathlib.Path.home() / ".config" / "antigravity-proxy" / "hermes_directive.local.txt")
+)
+
+
+def load_hermes_meta_directive() -> tuple[str, bool]:
+    """优先热加载本机私有元指令文件（不纳入 Git 版本控制），不存在时回退至默认通用元指令."""
+    try:
+        if LOCAL_HERMES_DIRECTIVE_PATH.is_file():
+            custom_text = LOCAL_HERMES_DIRECTIVE_PATH.read_text(encoding="utf-8").strip()
+            if custom_text:
+                return custom_text, True
+    except Exception as e:
+        print(f"[Proxy] !! 读取本机私有元指令失败 ({LOCAL_HERMES_DIRECTIVE_PATH}): {e}，将回退至内置指令")
+    return LLM_API_META_DIRECTIVE, False
+
+
 def build_agy_prompt(
     messages: list[dict[str, Any]],
     response_format: dict[str, Any] | None = None,
@@ -386,9 +405,12 @@ def build_agy_prompt(
             user_parts.append(f"Assistant: {content_str}")
 
     prompt_lines: list[str] = []
-    # 仅当请求来源是 Hermes 智能体时，注入防止执行本地系统工具的 LLM API 元指令
+    # 仅当请求来源是 Hermes 智能体时，注入专属元指令（优先读取本机私有配置，不上传 Git）
     if inject_hermes_directive:
-        prompt_lines.append(LLM_API_META_DIRECTIVE)
+        directive_text, is_local = load_hermes_meta_directive()
+        if is_local:
+            print(f"[Proxy] [Hermes配置] 已热加载本机私有元指令 ({LOCAL_HERMES_DIRECTIVE_PATH})")
+        prompt_lines.append(directive_text)
     if system_parts:
         prompt_lines.append("【系统指令 / System Instructions】")
         prompt_lines.extend(system_parts)
@@ -735,6 +757,8 @@ def run_agy_stream_generator(
             event_name = event_obj.get("event")
             if event_name == "step_update":
                 step = event_obj.get("step_update", {})
+                # 任何活跃的步骤更新（含远程 SSH 工具执行进度）均刷新空闲保活时间
+                last_token_time = time.monotonic()
                 if step.get("step_type") == "agent_response":
                     delta = step.get("text_delta")
                     usage = step.get("usage")
@@ -747,7 +771,6 @@ def run_agy_stream_generator(
 
                     if isinstance(delta, str) and delta:
                         has_received_first_token = True
-                        last_token_time = time.monotonic()
                         collected_fragments.append(delta)
                         yield ("delta", delta, usage_info, None)
 
