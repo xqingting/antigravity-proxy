@@ -51,7 +51,7 @@ def test_chat_non_stream():
 def test_chat_stream():
     print("\n4. 测试 /v1/chat/completions 真正 SSE 流式输出 (stream: true)...")
     payload = {
-        "model": "gemini-3.8-flash",
+        "model": "gemini-4-hydrogen",
         "messages": [
             {"role": "user", "content": "请用五道菜名组成一首打油诗，每句一道菜。"}
         ],

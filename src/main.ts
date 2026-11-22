@@ -123,17 +123,17 @@ function initApp() {
 
   setupCopy(copyBaseUrlBtn, 'http://127.0.0.1:8765/v1')
   if (copyApiKeyBtn) setupCopy(copyApiKeyBtn, 'sk-antigravity-local')
-  if (copyModelBtn) setupCopy(copyModelBtn, 'gemini-3.8-flash')
+  if (copyModelBtn) setupCopy(copyModelBtn, 'gemini-4-hydrogen')
   if (copyAllConfigBtn) {
     setupCopy(
       copyAllConfigBtn,
-      `API Base URL: http://127.0.0.1:8765/v1\nAPI Key: sk-antigravity-local\nModel: gemini-3.8-flash`,
+      `API Base URL: http://127.0.0.1:8765/v1\nAPI Key: sk-antigravity-local\nModel: gemini-4-hydrogen`,
       '全套配置已复制 ✓'
     )
   }
   setupCopy(
     copyCurlBtn,
-    `curl http://127.0.0.1:8765/v1/chat/completions \\\n  -H "Content-Type: application/json" \\\n  -d '{"model": "gemini-3.8-flash", "messages": [{"role": "user", "content": "你好"}]}'`,
+    `curl http://127.0.0.1:8765/v1/chat/completions \\\n  -H "Content-Type: application/json" \\\n  -d '{"model": "gemini-4-hydrogen", "messages": [{"role": "user", "content": "你好"}]}'`,
     'cURL 已复制'
   )
 
@@ -150,16 +150,16 @@ function initApp() {
           updateUI({
             running: true,
             port: 8765,
-            model: data.default_model || 'gemini-3.8-flash',
+            model: data.default_model || 'gemini-4-hydrogen',
             effort: data.default_effort || 'high',
             agy_version: data.agy_version || '已连接',
           })
         } else {
-          updateUI({ running: false, port: 8765, model: 'gemini-3.8-flash', effort: 'high', agy_version: '未检测' })
+          updateUI({ running: false, port: 8765, model: 'gemini-4-hydrogen', effort: 'high', agy_version: '未检测' })
         }
       }
     } catch (e) {
-      updateUI({ running: false, port: 8765, model: 'gemini-3.8-flash', effort: 'high', agy_version: '未检测' })
+      updateUI({ running: false, port: 8765, model: 'gemini-4-hydrogen', effort: 'high', agy_version: '未检测' })
     }
   }
 
@@ -336,7 +336,7 @@ function initApp() {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
-            model: 'gemini-3.8-flash',
+            model: 'gemini-4-hydrogen',
             messages: [{ role: 'user', content: prompt }],
             stream: true,
           }),
@@ -409,7 +409,7 @@ function initApp() {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
-            model: 'gemini-3.8-flash',
+            model: 'gemini-4-hydrogen',
             messages: [{ role: 'user', content: prompt }],
             stream: false,
           }),

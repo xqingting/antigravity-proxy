@@ -1,7 +1,7 @@
 ﻿# Antigravity Proxy - PowerShell 启动脚本
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $Port = 8765
-$Model = "gemini-3.8-flash"
+$Model = "gemini-4-hydrogen"
 $Effort = "high"
 $Timeout = 300
 $MaxConcurrency = 5

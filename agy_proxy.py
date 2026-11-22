@@ -41,7 +41,7 @@ if hasattr(sys.stderr, "reconfigure"):
 DEFAULT_HOST = "0.0.0.0"
 DEFAULT_PORT = 8765
 DEFAULT_TIMEOUT_SECONDS = float(os.environ.get("AGY_PROXY_TIMEOUT") or os.environ.get("AGY_TIMEOUT") or 300.0)
-DEFAULT_MODEL = "gemini-3.8-flash"
+DEFAULT_MODEL = "gemini-4-hydrogen"
 DEFAULT_EFFORT = "high"
 DEFAULT_MAX_CONCURRENCY = 5
 DEFAULT_HERMES_IPS: set[str] = {
@@ -60,24 +60,27 @@ CORS_HEADERS = {
 # 常见客户端模型别名映射表
 MODEL_ALIASES: dict[str, str] = {
     # OpenAI 常见别名
-    "gpt-4o": "gemini-3.8-flash",
-    "gpt-4o-mini": "gemini-3.8-flash",
-    "gpt-4": "gemini-3.8-flash",
-    "gpt-4-turbo": "gemini-3.8-flash",
-    "gpt-3.5-turbo": "gemini-3.8-flash",
-    "o1": "gemini-3.8-flash",
-    "o3-mini": "gemini-3.8-flash",
+    "gpt-4o": "gemini-4-hydrogen",
+    "gpt-4o-mini": "gemini-4-hydrogen",
+    "gpt-4": "gemini-4-hydrogen",
+    "gpt-4-turbo": "gemini-4-hydrogen",
+    "gpt-3.5-turbo": "gemini-4-hydrogen",
+    "o1": "gemini-4-hydrogen",
+    "o3-mini": "gemini-4-hydrogen",
     # Claude 常见别名
-    "claude-3-5-sonnet": "gemini-3.8-flash",
-    "claude-3-7-sonnet": "gemini-3.8-flash",
-    "claude-3-opus": "gemini-3.8-flash",
-    "claude-3-haiku": "gemini-3.8-flash",
+    "claude-3-5-sonnet": "gemini-4-hydrogen",
+    "claude-3-7-sonnet": "gemini-4-hydrogen",
+    "claude-3-opus": "gemini-4-hydrogen",
+    "claude-3-haiku": "gemini-4-hydrogen",
     # Gemini / Antigravity 别名
-    "gemini-2.5-pro": "gemini-3.8-flash",
-    "gemini-2.0-flash": "gemini-3.8-flash",
-    "gemini-1.5-pro": "gemini-3.8-flash",
-    "gemini-1.5-flash": "gemini-3.8-flash",
-    "antigravity": "gemini-3.8-flash",
+    "gemini4hyper": "gemini-4-hydrogen",
+    "gemini-4-hyper": "gemini-4-hydrogen",
+    "gemini4hydrogen": "gemini-4-hydrogen",
+    "gemini-2.5-pro": "gemini-4-hydrogen",
+    "gemini-2.0-flash": "gemini-4-hydrogen",
+    "gemini-1.5-pro": "gemini-4-hydrogen",
+    "gemini-1.5-flash": "gemini-4-hydrogen",
+    "antigravity": "gemini-4-hydrogen",
 }
 
 
@@ -315,16 +318,18 @@ def normalize_model_and_effort(model_name: str | None, effort: str | None = None
     if raw_lower in MODEL_ALIASES:
         return MODEL_ALIASES[raw_lower], (effort or DEFAULT_EFFORT)
 
-    # 3. 原生支持透传: Gemini 系列 (包括 gemini-3.8, 以及未来的 gemini-4, gemini-4-flash, gemini-4-pro 等)
-    #    以及 agy 当前支持的 claude-sonnet-4-6, claude-opus-4-6-thinking, gpt-oss-120b-medium 等
+    # 3. 原生支持透传: Gemini 系列 (包括 gemini-4-hydrogen, gemini-4-neon, gemini-4-argon, gemini-3.8-flash 等)
+    #    以及 agy 当前支持的 claude-sonnet-5-5, claude-opus-5-5, claude-sonnet-4-6, gpt-oss-120b-medium 等
     if (
         raw_lower.startswith("gemini-")
         or raw_lower.startswith("claude-sonnet-4")
         or raw_lower.startswith("claude-opus-4")
+        or raw_lower.startswith("claude-sonnet-5")
+        or raw_lower.startswith("claude-opus-5")
         or raw_lower.startswith("gpt-oss-")
     ):
         actual_effort = effort or DEFAULT_EFFORT
-        for suffix in ("-high", "-medium", "-low"):
+        for suffix in ("-xhigh", "-high", "-medium", "-low"):
             if raw_lower.endswith(suffix):
                 raw_clean = raw[: -len(suffix)]
                 return raw_clean, suffix[1:]
@@ -334,7 +339,7 @@ def normalize_model_and_effort(model_name: str | None, effort: str | None = None
     if any(raw_lower.startswith(prefix) for prefix in ("gpt-", "claude-", "o1", "o3", "deepseek")):
         return DEFAULT_MODEL, (effort or DEFAULT_EFFORT)
 
-    # 5. 默认兜底至 gemini-3.8-flash
+    # 5. 默认兜底至 DEFAULT_MODEL (gemini-4-hydrogen)
     return DEFAULT_MODEL, (effort or DEFAULT_EFFORT)
 
 
@@ -898,15 +903,27 @@ class AgyProxyHandler(http.server.BaseHTTPRequestHandler):
                 "object": "list",
                 "data": [
                     {
-                        "id": "gemini-3.8-flash",
+                        "id": "gemini-4-hydrogen",
                         "object": "model",
-                        "created": 1788100000,
+                        "created": 1795300000,
                         "owned_by": "google",
                     },
                     {
-                        "id": "gemini-3.7-flash",
+                        "id": "gemini-4-neon",
                         "object": "model",
-                        "created": 1788000000,
+                        "created": 1795300000,
+                        "owned_by": "google",
+                    },
+                    {
+                        "id": "gemini-4-argon",
+                        "object": "model",
+                        "created": 1795300000,
+                        "owned_by": "google",
+                    },
+                    {
+                        "id": "gemini-3.8-flash",
+                        "object": "model",
+                        "created": 1788100000,
                         "owned_by": "google",
                     },
                     {

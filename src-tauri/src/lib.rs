@@ -111,7 +111,7 @@ mod commands {
                 model: health
                     .get("default_model")
                     .and_then(|v| v.as_str())
-                    .unwrap_or("gemini-3.8-flash")
+                    .unwrap_or("gemini-4-hydrogen")
                     .to_string(),
                 effort: health
                     .get("default_effort")
@@ -129,7 +129,7 @@ mod commands {
             ProxyStatus {
                 running: false,
                 port,
-                model: "gemini-3.8-flash".to_string(),
+                model: "gemini-4-hydrogen".to_string(),
                 effort: "high".to_string(),
                 agy_version: "未检测".to_string(),
                 pid: None,
@@ -160,7 +160,7 @@ mod commands {
             .arg("--port")
             .arg("8765")
             .arg("--model")
-            .arg("gemini-3.8-flash")
+            .arg("gemini-4-hydrogen")
             .arg("--effort")
             .arg("high")
             .arg("--timeout")
@@ -224,7 +224,7 @@ mod commands {
         tauri::async_runtime::spawn_blocking(move || {
             let url = "http://127.0.0.1:8765/v1/chat/completions";
             let body = serde_json::json!({
-                "model": "gemini-3.8-flash",
+                "model": "gemini-4-hydrogen",
                 "messages": [
                     {"role": "user", "content": prompt}
                 ]

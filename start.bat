@@ -4,7 +4,7 @@ setlocal enabledelayedexpansion
 
 set "DIR=%~dp0"
 set "PORT=8765"
-set "MODEL=gemini-3.8-flash"
+set "MODEL=gemini-4-hydrogen"
 set "EFFORT=high"
 set "TIMEOUT=300"
 set "MAX_CONCURRENCY=5"
