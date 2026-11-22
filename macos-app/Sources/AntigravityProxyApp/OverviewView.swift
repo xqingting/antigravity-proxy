@@ -4,6 +4,7 @@ struct OverviewView: View {
     @EnvironmentObject var service: ProxyService
     var onSelectTab: (SidebarTab) -> Void
     @State private var showResetConfirm: Bool = false
+    @State private var inspectingRecord: RequestRecord?
 
     private var hasUnsavedModelChange: Bool {
         service.selectedModel != service.activeModel || service.selectedEffort.rawValue != service.activeEffort.lowercased()
@@ -288,6 +289,10 @@ struct OverviewView: View {
                             )
                         }
                         .padding(.vertical, 10)
+                        .contentShape(Rectangle())
+                        .onTapGesture {
+                            inspectingRecord = item
+                        }
                     }
                 }
             }
@@ -298,6 +303,10 @@ struct OverviewView: View {
             RoundedRectangle(cornerRadius: 16, style: .continuous)
                 .strokeBorder(Color.primary.opacity(0.08), lineWidth: 1)
         )
+        .sheet(item: $inspectingRecord) { rec in
+            RequestDetailSheet(record: rec)
+                .environmentObject(service)
+        }
     }
 }
 

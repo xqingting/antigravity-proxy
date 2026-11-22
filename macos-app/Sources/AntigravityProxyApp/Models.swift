@@ -84,10 +84,17 @@ struct RequestRecord: Decodable, Identifiable, Sendable {
     let promptTokens: Int
     let completionTokens: Int
     let cachedTokens: Int?
+    let thinkingTokens: Int?
     let totalTokens: Int
     let tps: Double
     let status: String
     let error: String?
+    let clientIp: String?
+    let isHermes: Bool?
+    let inputPreview: String?
+    let stepsCount: Int?
+    let toolCallsCount: Int?
+    let hasTrace: Bool?
 
     enum CodingKeys: String, CodingKey {
         case id, timestamp, date, datetime, model, duration, tps, status, error
@@ -95,7 +102,14 @@ struct RequestRecord: Decodable, Identifiable, Sendable {
         case promptTokens = "prompt_tokens"
         case completionTokens = "completion_tokens"
         case cachedTokens = "cached_tokens"
+        case thinkingTokens = "thinking_tokens"
         case totalTokens = "total_tokens"
+        case clientIp = "client_ip"
+        case isHermes = "is_hermes"
+        case inputPreview = "input_preview"
+        case stepsCount = "steps_count"
+        case toolCallsCount = "tool_calls_count"
+        case hasTrace = "has_trace"
     }
 
     var displayDate: String {
@@ -106,6 +120,70 @@ struct RequestRecord: Decodable, Identifiable, Sendable {
 
     var isSuccess: Bool { status.lowercased() == "success" }
     var isTimeout: Bool { status.lowercased() == "timeout" }
+}
+
+struct TraceMessage: Decodable, Identifiable, Sendable {
+    var id: String { "\(role)-\(content.prefix(32))-\(content.count)" }
+    let role: String
+    let content: String
+}
+
+struct TraceStep: Decodable, Identifiable, Sendable {
+    var id: String { "\(index)-\(type)-\(title)" }
+    let index: Int
+    let type: String
+    let title: String
+    let parameters: String?
+    let output: String?
+    let duration: Double?
+    let state: String?
+}
+
+struct TraceUsage: Decodable, Sendable {
+    let promptTokens: Int
+    let completionTokens: Int
+    let cachedTokens: Int?
+    let thinkingTokens: Int?
+    let totalTokens: Int
+
+    enum CodingKeys: String, CodingKey {
+        case promptTokens = "prompt_tokens"
+        case completionTokens = "completion_tokens"
+        case cachedTokens = "cached_tokens"
+        case thinkingTokens = "thinking_tokens"
+        case totalTokens = "total_tokens"
+    }
+}
+
+struct RequestTrace: Decodable, Identifiable, Sendable {
+    let id: String
+    let datetime: String
+    let clientIp: String?
+    let isHermes: Bool?
+    let model: String
+    let isStream: Bool
+    let status: String
+    let duration: Double
+    let tps: Double?
+    let conversationId: String?
+    let promptChars: Int?
+    let usage: TraceUsage
+    let inputMessages: [TraceMessage]
+    let executionSteps: [TraceStep]
+    let outputText: String
+    let error: String?
+
+    enum CodingKeys: String, CodingKey {
+        case id, datetime, model, status, duration, tps, usage, error
+        case clientIp = "client_ip"
+        case isHermes = "is_hermes"
+        case isStream = "is_stream"
+        case conversationId = "conversation_id"
+        case promptChars = "prompt_chars"
+        case inputMessages = "input_messages"
+        case executionSteps = "execution_steps"
+        case outputText = "output_text"
+    }
 }
 
 struct StatsSnapshot: Decodable, Sendable {

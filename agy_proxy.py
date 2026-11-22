@@ -87,12 +87,82 @@ MODEL_ALIASES: dict[str, str] = {
 # ==============================================================================
 # 统计监控管理器 (StatsTracker)
 # ==============================================================================
+def _truncate_text(text: str | None, limit: int = 20000) -> str:
+    if not text:
+        return ""
+    if len(text) <= limit:
+        return text
+    return text[:limit] + f"\n\n... [内容过长，已截断，原始总长 {len(text)} 字符]"
+
+
+def _sanitize_messages_for_trace(messages: list[dict[str, Any]] | None) -> list[dict[str, str]]:
+    """提取客户端原始消息用于详情展示（绝不包含本机私有元指令）."""
+    if not messages:
+        return []
+    result: list[dict[str, str]] = []
+    for msg in messages[-40:]:
+        if not isinstance(msg, dict):
+            continue
+        role = str(msg.get("role", "user"))
+        content = msg.get("content", "")
+        if isinstance(content, list):
+            parts: list[str] = []
+            for block in content:
+                if isinstance(block, dict) and block.get("type") == "text":
+                    parts.append(str(block.get("text", "")))
+                elif isinstance(block, str):
+                    parts.append(block)
+            content_str = "\n".join(parts)
+        elif content is None:
+            content_str = ""
+        else:
+            content_str = str(content)
+
+        # 若消息携带 tool_calls（如历史 assistant 工具消息），附带展示摘要
+        tc_list = msg.get("tool_calls")
+        if isinstance(tc_list, list) and tc_list:
+            try:
+                tc_dump = json.dumps(tc_list, ensure_ascii=False, indent=2)
+                content_str = (content_str + "\n\n[tool_calls]\n" + tc_dump).strip()
+            except Exception:
+                pass
+
+        result.append({
+            "role": role,
+            "content": _truncate_text(content_str, 15000),
+        })
+    return result
+
+
+def _extract_input_preview(messages: list[dict[str, Any]] | None) -> str:
+    """提取最近一条用户消息作为请求列表的简短摘要."""
+    if not messages:
+        return ""
+    for msg in reversed(messages):
+        if not isinstance(msg, dict):
+            continue
+        if msg.get("role") == "user":
+            content = msg.get("content", "")
+            if isinstance(content, list):
+                text = " ".join(
+                    str(b.get("text", "")) if isinstance(b, dict) else str(b)
+                    for b in content
+                )
+            else:
+                text = str(content)
+            text = " ".join(text.split())
+            if text:
+                return text[:120] + ("…" if len(text) > 120 else "")
+    return ""
+
+
 class StatsTracker:
-    """线程安全的统计管理器，支持输入/输出/缓存命中率与本地 JSON 持久化."""
+    """线程安全的统计管理器，支持输入/输出/缓存命中率、请求全链路 Trace 与本地 JSON 持久化."""
 
     def __init__(self, storage_path: pathlib.Path | None = None, max_concurrency: int = DEFAULT_MAX_CONCURRENCY) -> None:
         self.lock = threading.Lock()
         self.storage_path = storage_path or (pathlib.Path(__file__).parent / ".stats.json")
+        self.traces_dir = self.storage_path.parent / ".traces"
         self.max_concurrency = max_concurrency
         self.total_requests = 0
         self.successful_requests = 0
@@ -138,6 +208,32 @@ class StatsTracker:
         except Exception as e:
             sys.stderr.write(f"[Stats] 保存统计文件异常: {e}\n")
 
+    def _save_trace(self, req_id: str, trace_payload: dict[str, Any]) -> None:
+        try:
+            self.traces_dir.mkdir(parents=True, exist_ok=True)
+            trace_file = self.traces_dir / f"{req_id}.json"
+            trace_file.write_text(json.dumps(trace_payload, ensure_ascii=False, indent=2), encoding="utf-8")
+            # 仅保留最近 60 份 trace，防止磁盘累积
+            files = sorted(self.traces_dir.glob("req-*.json"), key=lambda p: p.stat().st_mtime, reverse=True)
+            for old_file in files[60:]:
+                try:
+                    old_file.unlink()
+                except Exception:
+                    pass
+        except Exception as e:
+            sys.stderr.write(f"[Stats] 保存 Trace 异常: {e}\n")
+
+    def get_trace(self, req_id: str) -> dict[str, Any] | None:
+        if not re.fullmatch(r"req-[a-zA-Z0-9_-]{4,32}", req_id):
+            return None
+        trace_file = self.traces_dir / f"{req_id}.json"
+        if not trace_file.is_file():
+            return None
+        try:
+            return json.loads(trace_file.read_text(encoding="utf-8"))
+        except Exception:
+            return None
+
     def record_start(self) -> None:
         with self.lock:
             self.active_requests += 1
@@ -151,8 +247,17 @@ class StatsTracker:
         prompt_tokens: int,
         completion_tokens: int,
         cached_tokens: int = 0,
+        thinking_tokens: int = 0,
         status: str,  # "success" | "error" | "timeout"
         error_msg: str | None = None,
+        client_ip: str = "",
+        is_hermes: bool = False,
+        input_messages: list[dict[str, Any]] | None = None,
+        prompt_chars: int = 0,
+        execution_steps: list[dict[str, Any]] | None = None,
+        output_text: str | None = None,
+        emitted_tool_calls: list[dict[str, Any]] | None = None,
+        conversation_id: str | None = None,
     ) -> dict[str, Any]:
         with self.lock:
             self.active_requests = max(0, self.active_requests - 1)
@@ -169,8 +274,29 @@ class StatsTracker:
             tps = round(completion_tokens / duration, 1) if duration > 0 and completion_tokens > 0 else 0.0
 
             now = dt.datetime.now()
+            req_id = f"req-{uuid.uuid4().hex[:8]}"
+            steps_list = list(execution_steps or [])
+            emitted_tcs = list(emitted_tool_calls or [])
+
+            # 将转交给 Hermes 执行的 tool_calls 也追加到执行过程时间轴中
+            for tc in emitted_tcs:
+                fn = tc.get("function", {}) if isinstance(tc, dict) else {}
+                steps_list.append({
+                    "index": len(steps_list) + 1,
+                    "type": "hermes_tool_call",
+                    "title": f"{fn.get('name', 'tool')} (转交 Hermes 执行)",
+                    "parameters": _truncate_text(str(fn.get("arguments", "")), 8000),
+                    "output": "",
+                    "duration": 0.0,
+                    "state": "EMITTED",
+                })
+
+            local_tool_count = sum(1 for s in steps_list if s.get("type") == "tool")
+            total_tool_count = local_tool_count + len(emitted_tcs)
+            preview = _extract_input_preview(input_messages)
+
             record = {
-                "id": f"req-{uuid.uuid4().hex[:8]}",
+                "id": req_id,
                 "timestamp": now.strftime("%H:%M:%S"),
                 "date": now.strftime("%Y-%m-%d"),
                 "datetime": now.strftime("%Y-%m-%d %H:%M:%S"),
@@ -180,15 +306,48 @@ class StatsTracker:
                 "prompt_tokens": prompt_tokens,
                 "completion_tokens": completion_tokens,
                 "cached_tokens": cached_tokens,
+                "thinking_tokens": thinking_tokens,
                 "total_tokens": prompt_tokens + completion_tokens,
                 "tps": tps,
                 "status": status,
                 "error": error_msg,
+                "client_ip": client_ip,
+                "is_hermes": is_hermes,
+                "input_preview": preview,
+                "steps_count": len(steps_list),
+                "tool_calls_count": total_tool_count,
+                "has_trace": True,
             }
             self.recent_history.append(record)
             if len(self.recent_history) > 50:
                 self.recent_history.pop(0)
 
+            trace_payload = {
+                "id": req_id,
+                "datetime": record["datetime"],
+                "client_ip": client_ip,
+                "is_hermes": is_hermes,
+                "model": model,
+                "is_stream": is_stream,
+                "status": status,
+                "duration": round(duration, 2),
+                "tps": tps,
+                "conversation_id": conversation_id,
+                "prompt_chars": prompt_chars,
+                "usage": {
+                    "prompt_tokens": prompt_tokens,
+                    "completion_tokens": completion_tokens,
+                    "cached_tokens": cached_tokens,
+                    "thinking_tokens": thinking_tokens,
+                    "total_tokens": prompt_tokens + completion_tokens,
+                },
+                "input_messages": _sanitize_messages_for_trace(input_messages),
+                "execution_steps": steps_list,
+                "output_text": _truncate_text(output_text, 30000),
+                "emitted_tool_calls": emitted_tcs,
+                "error": error_msg,
+            }
+            self._save_trace(req_id, trace_payload)
             self._save()
             return record
 
@@ -202,6 +361,12 @@ class StatsTracker:
             self.total_tokens = 0
             self.total_duration_seconds = 0.0
             self.recent_history.clear()
+            if self.traces_dir.is_dir():
+                for f in self.traces_dir.glob("req-*.json"):
+                    try:
+                        f.unlink()
+                    except Exception:
+                        pass
             self._save()
 
     def get_snapshot(self) -> dict[str, Any]:
@@ -636,6 +801,7 @@ def run_agy_stream_generator(
     effort: str | None = None,
     workspace: str | None = None,
     timeout: float = DEFAULT_TIMEOUT_SECONDS,
+    trace_out: dict[str, Any] | None = None,
 ) -> Generator[tuple[str, Any, Any, Any], None, None]:
     """生成器：实时产生 agy 输出的事件片段.
 
@@ -722,6 +888,17 @@ def run_agy_stream_generator(
     has_received_first_token = False
     last_token_time = t_start
 
+    # 执行过程追踪（按 step_index 聚合思考、工具调用与回复轮次）
+    step_map: dict[str, dict[str, Any]] = {}
+    step_order: list[str] = []
+    if trace_out is not None:
+        trace_out.setdefault("conversation_id", None)
+        trace_out.setdefault("steps", [])
+
+    def _sync_trace_steps() -> None:
+        if trace_out is not None:
+            trace_out["steps"] = [step_map[k] for k in step_order]
+
     try:
         while True:
             now = time.monotonic()
@@ -755,11 +932,57 @@ def run_agy_stream_generator(
                 continue
 
             event_name = event_obj.get("event")
-            if event_name == "step_update":
+            if event_name == "init":
+                if trace_out is not None and event_obj.get("conversation_id"):
+                    trace_out["conversation_id"] = str(event_obj.get("conversation_id"))
+
+            elif event_name == "step_update":
                 step = event_obj.get("step_update", {})
                 # 任何活跃的步骤更新（含远程 SSH 工具执行进度）均刷新空闲保活时间
                 last_token_time = time.monotonic()
-                if step.get("step_type") == "agent_response":
+                step_type = step.get("step_type")
+                step_idx_raw = str(step.get("step_index", len(step_order)))
+                step_state = str(step.get("state", "ACTIVE"))
+                if trace_out is not None and not trace_out.get("conversation_id") and step.get("conversation_id"):
+                    trace_out["conversation_id"] = str(step.get("conversation_id"))
+
+                if step_type == "tool":
+                    tool_info = step.get("tool_info") if isinstance(step.get("tool_info"), dict) else {}
+                    tool_name = str(step.get("tool_name") or tool_info.get("name") or "tool")
+                    params_obj = tool_info.get("parameters")
+                    try:
+                        params_str = json.dumps(params_obj, ensure_ascii=False, indent=2) if params_obj is not None else ""
+                    except Exception:
+                        params_str = str(params_obj or "")
+                    output_str = str(tool_info.get("output") or "")
+                    try:
+                        step_dur = round(float(step.get("duration_seconds") or 0.0), 2)
+                    except Exception:
+                        step_dur = 0.0
+
+                    if step_idx_raw not in step_map:
+                        step_order.append(step_idx_raw)
+                        step_map[step_idx_raw] = {
+                            "index": len(step_order),
+                            "type": "tool",
+                            "title": tool_name,
+                            "parameters": _truncate_text(params_str, 8000),
+                            "output": _truncate_text(output_str, 15000),
+                            "duration": step_dur,
+                            "state": step_state,
+                        }
+                    else:
+                        entry = step_map[step_idx_raw]
+                        entry["state"] = step_state
+                        if step_dur > 0:
+                            entry["duration"] = step_dur
+                        if params_str:
+                            entry["parameters"] = _truncate_text(params_str, 8000)
+                        if output_str:
+                            entry["output"] = _truncate_text(output_str, 15000)
+                    _sync_trace_steps()
+
+                elif step_type == "agent_response":
                     delta = step.get("text_delta")
                     usage = step.get("usage")
                     if isinstance(usage, dict):
@@ -769,6 +992,34 @@ def run_agy_stream_generator(
                         usage_info["thinking_tokens"] = usage.get("thinking_tokens", usage_info["thinking_tokens"])
                         usage_info["total_tokens"] = usage.get("total_tokens", usage_info["total_tokens"])
 
+                    if step_state == "DONE":
+                        try:
+                            step_dur = round(float(step.get("duration_seconds") or 0.0), 2)
+                        except Exception:
+                            step_dur = 0.0
+                        think_tok = int(usage.get("thinking_tokens", 0)) if isinstance(usage, dict) else 0
+                        out_tok = int(usage.get("output_tokens", 0)) if isinstance(usage, dict) else 0
+                        cache_tok = int(usage.get("cache_read_tokens") or usage.get("cached_tokens") or 0) if isinstance(usage, dict) else 0
+                        detail_parts = []
+                        if think_tok > 0:
+                            detail_parts.append(f"思考 {think_tok} tok")
+                        if out_tok > 0:
+                            detail_parts.append(f"生成 {out_tok} tok")
+                        if cache_tok > 0:
+                            detail_parts.append(f"缓存命中 {cache_tok} tok")
+                        if step_idx_raw not in step_map:
+                            step_order.append(step_idx_raw)
+                        step_map[step_idx_raw] = {
+                            "index": len(step_order),
+                            "type": "agent_response",
+                            "title": "模型推理与生成",
+                            "parameters": " · ".join(detail_parts) if detail_parts else "完成本轮推理",
+                            "output": "",
+                            "duration": step_dur,
+                            "state": "DONE",
+                        }
+                        _sync_trace_steps()
+
                     if isinstance(delta, str) and delta:
                         has_received_first_token = True
                         collected_fragments.append(delta)
@@ -776,6 +1027,8 @@ def run_agy_stream_generator(
 
             elif event_name == "result":
                 res = event_obj.get("result", {})
+                if trace_out is not None and res.get("conversation_id"):
+                    trace_out["conversation_id"] = str(res.get("conversation_id"))
                 status = res.get("status")
                 if status == "SUCCESS":
                     final_response = res.get("response")
@@ -816,6 +1069,7 @@ def run_agy_stream_json(
     effort: str | None = None,
     workspace: str | None = None,
     timeout: float = DEFAULT_TIMEOUT_SECONDS,
+    trace_out: dict[str, Any] | None = None,
 ) -> tuple[str, dict[str, int], float]:
     """以阻塞方式调用 agy 并完整收集结果."""
     final_text = ""
@@ -829,6 +1083,7 @@ def run_agy_stream_json(
         effort=effort,
         workspace=workspace,
         timeout=timeout,
+        trace_out=trace_out,
     ):
         if evt[0] == "done":
             final_text = evt[1]
@@ -919,6 +1174,15 @@ class AgyProxyHandler(http.server.BaseHTTPRequestHandler):
         if path in ("/v1/stats", "/stats"):
             snapshot = GLOBAL_STATS.get_snapshot()
             self._send_json_response(200, snapshot)
+            return
+
+        if path.startswith("/v1/requests/") or path.startswith("/requests/"):
+            req_id = path.rsplit("/", 1)[-1].strip()
+            trace = GLOBAL_STATS.get_trace(req_id)
+            if trace is None:
+                self._send_json_response(404, {"error": {"message": f"Trace not found: {req_id}", "type": "not_found"}})
+            else:
+                self._send_json_response(200, trace)
             return
 
         if path in ("/v1/models", "/models"):
@@ -1039,14 +1303,29 @@ class AgyProxyHandler(http.server.BaseHTTPRequestHandler):
                 print(f"[Proxy] 请求排队完成 (等待耗时: {queue_wait:.2f}s)")
 
             if is_stream:
-                self._handle_stream_completions(prompt, model, effort, final_model, effective_timeout)
+                self._handle_stream_completions(
+                    prompt, model, effort, final_model, effective_timeout,
+                    messages=messages, client_ip=client_ip, is_hermes=is_hermes,
+                )
             else:
-                self._handle_block_completions(prompt, model, effort, final_model, response_format, effective_timeout)
+                self._handle_block_completions(
+                    prompt, model, effort, final_model, response_format, effective_timeout,
+                    messages=messages, client_ip=client_ip, is_hermes=is_hermes,
+                )
         finally:
             CONCURRENCY_SEMAPHORE.release()
 
     def _handle_stream_completions(
-        self, prompt: str, model: str, effort: str, final_model: str, timeout: float
+        self,
+        prompt: str,
+        model: str,
+        effort: str,
+        final_model: str,
+        timeout: float,
+        *,
+        messages: list[dict[str, Any]] | None = None,
+        client_ip: str = "",
+        is_hermes: bool = False,
     ) -> None:
         """处理 SSE 流式响应 (stream: true)."""
         response_id = f"chatcmpl-{uuid.uuid4().hex[:12]}"
@@ -1064,6 +1343,9 @@ class AgyProxyHandler(http.server.BaseHTTPRequestHandler):
         t_start = time.monotonic()
         final_usage = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0, "cached_tokens": 0, "thinking_tokens": 0}
         duration = 0.0
+        trace_out: dict[str, Any] = {}
+        streamed_text_parts: list[str] = []
+        emitted_tool_calls: list[dict[str, Any]] = []
 
         stream_filter = StreamToolCallFilter()
         try:
@@ -1074,11 +1356,13 @@ class AgyProxyHandler(http.server.BaseHTTPRequestHandler):
                 effort=effort,
                 workspace=self.workspace,
                 timeout=timeout,
+                trace_out=trace_out,
             ):
                 if evt[0] == "delta":
                     delta_chunk = evt[1]
                     for sub_evt in stream_filter.feed(delta_chunk):
                         if sub_evt["type"] == "content":
+                            streamed_text_parts.append(sub_evt["text"])
                             chunk_obj = {
                                 "id": response_id,
                                 "object": "chat.completion.chunk",
@@ -1095,6 +1379,7 @@ class AgyProxyHandler(http.server.BaseHTTPRequestHandler):
                             self.wfile.write(f"data: {json.dumps(chunk_obj, ensure_ascii=False)}\n\n".encode("utf-8"))
                             self.wfile.flush()
                         elif sub_evt["type"] == "tool_calls":
+                            emitted_tool_calls.extend(sub_evt["tool_calls"])
                             chunk_obj = {
                                 "id": response_id,
                                 "object": "chat.completion.chunk",
@@ -1116,6 +1401,7 @@ class AgyProxyHandler(http.server.BaseHTTPRequestHandler):
 
             for sub_evt in stream_filter.finalize():
                 if sub_evt["type"] == "content":
+                    streamed_text_parts.append(sub_evt["text"])
                     chunk_obj = {
                         "id": response_id,
                         "object": "chat.completion.chunk",
@@ -1169,7 +1455,17 @@ class AgyProxyHandler(http.server.BaseHTTPRequestHandler):
                 duration=duration,
                 prompt_tokens=final_usage.get("prompt_tokens", 0),
                 completion_tokens=final_usage.get("completion_tokens", 0),
+                cached_tokens=final_usage.get("cached_tokens", 0),
+                thinking_tokens=final_usage.get("thinking_tokens", 0),
                 status="success",
+                client_ip=client_ip,
+                is_hermes=is_hermes,
+                input_messages=messages,
+                prompt_chars=len(prompt),
+                execution_steps=trace_out.get("steps"),
+                output_text="".join(streamed_text_parts),
+                emitted_tool_calls=emitted_tool_calls,
+                conversation_id=trace_out.get("conversation_id"),
             )
         except TimeoutError as e:
             print(f"[Proxy] !! 流式超时: {e}")
@@ -1180,8 +1476,17 @@ class AgyProxyHandler(http.server.BaseHTTPRequestHandler):
                 prompt_tokens=final_usage.get("prompt_tokens", 0) or max(1, len(prompt) // 2),
                 completion_tokens=final_usage.get("completion_tokens", 0),
                 cached_tokens=final_usage.get("cached_tokens", 0),
+                thinking_tokens=final_usage.get("thinking_tokens", 0),
                 status="timeout",
                 error_msg=str(e),
+                client_ip=client_ip,
+                is_hermes=is_hermes,
+                input_messages=messages,
+                prompt_chars=len(prompt),
+                execution_steps=trace_out.get("steps"),
+                output_text="".join(streamed_text_parts),
+                emitted_tool_calls=emitted_tool_calls,
+                conversation_id=trace_out.get("conversation_id"),
             )
             err_data = {"error": {"message": str(e), "type": "timeout_error"}}
             self.wfile.write(f"data: {json.dumps(err_data)}\n\n".encode("utf-8"))
@@ -1197,6 +1502,14 @@ class AgyProxyHandler(http.server.BaseHTTPRequestHandler):
                 cached_tokens=0,
                 status="error",
                 error_msg=str(e),
+                client_ip=client_ip,
+                is_hermes=is_hermes,
+                input_messages=messages,
+                prompt_chars=len(prompt),
+                execution_steps=trace_out.get("steps"),
+                output_text="".join(streamed_text_parts),
+                emitted_tool_calls=emitted_tool_calls,
+                conversation_id=trace_out.get("conversation_id"),
             )
             err_data = {"error": {"message": str(e), "type": "internal_error"}}
             self.wfile.write(f"data: {json.dumps(err_data)}\n\n".encode("utf-8"))
@@ -1210,10 +1523,15 @@ class AgyProxyHandler(http.server.BaseHTTPRequestHandler):
         final_model: str,
         response_format: dict[str, Any] | None,
         timeout: float,
+        *,
+        messages: list[dict[str, Any]] | None = None,
+        client_ip: str = "",
+        is_hermes: bool = False,
     ) -> None:
         """处理非流式完整响应."""
         print(f"[Proxy] -> 正在调用 Antigravity (模型: {final_model}, 字符数: {len(prompt)}, 超时: {timeout}s)...")
         t_start = time.monotonic()
+        trace_out: dict[str, Any] = {}
 
         try:
             output_text, usage, duration = run_agy_stream_json(
@@ -1223,18 +1541,10 @@ class AgyProxyHandler(http.server.BaseHTTPRequestHandler):
                 effort=effort,
                 workspace=self.workspace,
                 timeout=timeout,
+                trace_out=trace_out,
             )
             tps = round(usage.get("completion_tokens", 0) / duration, 1) if duration > 0 else 0.0
             print(f"[Proxy] <- 调用成功 (耗时: {duration:.2f}s, 入: {usage.get('prompt_tokens')}, 出: {usage.get('completion_tokens')}, 速率: {tps} tps)")
-
-            GLOBAL_STATS.record_finish(
-                model=final_model,
-                is_stream=False,
-                duration=duration,
-                prompt_tokens=usage.get("prompt_tokens", 0),
-                completion_tokens=usage.get("completion_tokens", 0),
-                status="success",
-            )
         except TimeoutError as e:
             print(f"[Proxy] !! 超时: {e}")
             GLOBAL_STATS.record_finish(
@@ -1245,6 +1555,13 @@ class AgyProxyHandler(http.server.BaseHTTPRequestHandler):
                 completion_tokens=0,
                 status="timeout",
                 error_msg=str(e),
+                client_ip=client_ip,
+                is_hermes=is_hermes,
+                input_messages=messages,
+                prompt_chars=len(prompt),
+                execution_steps=trace_out.get("steps"),
+                output_text="",
+                conversation_id=trace_out.get("conversation_id"),
             )
             self._send_json_response(504, {"error": {"message": str(e), "type": "timeout_error"}})
             return
@@ -1259,6 +1576,13 @@ class AgyProxyHandler(http.server.BaseHTTPRequestHandler):
                 cached_tokens=0,
                 status="error",
                 error_msg=str(e),
+                client_ip=client_ip,
+                is_hermes=is_hermes,
+                input_messages=messages,
+                prompt_chars=len(prompt),
+                execution_steps=trace_out.get("steps"),
+                output_text="",
+                conversation_id=trace_out.get("conversation_id"),
             )
             self._send_json_response(500, {"error": {"message": str(e), "type": "internal_error"}})
             return
@@ -1267,6 +1591,25 @@ class AgyProxyHandler(http.server.BaseHTTPRequestHandler):
 
         if response_format and isinstance(response_format, dict) and response_format.get("type") == "json_object":
             clean_text = extract_json_content(clean_text)
+
+        GLOBAL_STATS.record_finish(
+            model=final_model,
+            is_stream=False,
+            duration=duration,
+            prompt_tokens=usage.get("prompt_tokens", 0),
+            completion_tokens=usage.get("completion_tokens", 0),
+            cached_tokens=usage.get("cached_tokens", 0),
+            thinking_tokens=usage.get("thinking_tokens", 0),
+            status="success",
+            client_ip=client_ip,
+            is_hermes=is_hermes,
+            input_messages=messages,
+            prompt_chars=len(prompt),
+            execution_steps=trace_out.get("steps"),
+            output_text=clean_text,
+            emitted_tool_calls=tool_calls,
+            conversation_id=trace_out.get("conversation_id"),
+        )
 
         response_id = f"chatcmpl-{uuid.uuid4().hex[:12]}"
         created_ts = int(time.time())

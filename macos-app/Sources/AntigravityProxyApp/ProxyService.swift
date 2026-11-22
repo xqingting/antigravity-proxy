@@ -177,6 +177,19 @@ final class ProxyService: ObservableObject {
         }
     }
 
+    func fetchRequestTrace(id: String) async -> RequestTrace? {
+        guard let url = URL(string: "http://127.0.0.1:\(port)/v1/requests/\(id)") else { return nil }
+        var req = URLRequest(url: url)
+        req.timeoutInterval = 5.0
+        do {
+            let (data, resp) = try await session.data(for: req)
+            guard let http = resp as? HTTPURLResponse, http.statusCode == 200 else { return nil }
+            return try JSONDecoder().decode(RequestTrace.self, from: data)
+        } catch {
+            return nil
+        }
+    }
+
     func resetStats() async {
         guard let url = URL(string: "http://127.0.0.1:\(port)/v1/stats/reset") else { return }
         var req = URLRequest(url: url)
