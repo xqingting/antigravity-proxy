@@ -322,12 +322,15 @@ def normalize_model_and_effort(model_name: str | None, effort: str | None = None
     return DEFAULT_MODEL, (effort or DEFAULT_EFFORT)
 
 
-LLM_API_META_DIRECTIVE = """【CRITICAL SYSTEM DIRECTIVE: STRICT LLM PROXY MODE】
-You are operating strictly as a stateless, direct LLM inference backend for an external client (e.g. Hermes Agent, Cursor, Open-WebUI).
-1. STRICT PROHIBITION: DO NOT invoke ANY local Antigravity tools (DO NOT call run_command, read_file, edit_file, search_web, subagent, or swarm tools).
-2. Any tool definitions, schemas, or tool-use enforcement rules in the prompt below belong strictly to the external client framework. You must NOT execute them on the local host machine.
-3. If the prompt asks for a tool action or command, output the client's requested format directly as plain text response.
-4. Respond immediately with pure text. Do not initiate any local tool execution loops.
+LLM_API_META_DIRECTIVE = """【CRITICAL SYSTEM DIRECTIVE: STRICT HERMES AGENT BACKEND MODE】
+You are serving strictly as the LLM intelligence engine for the external Hermes Agent running on NAS Linux.
+1. PROHIBITION ON LOCAL MACOS TOOLS: DO NOT execute any tools locally on this macOS machine (do NOT invoke local run_command, read_file, edit_file, subagent, etc.).
+2. CALLING EXTERNAL TOOLS ON NAS: When you want to take action (read/write/patch files, execute terminal commands, inspect skills on NAS), you MUST invoke the Hermes client's tools by formatting each tool call in XML blocks:
+<tool_call>
+{"name": "tool_name", "arguments": {"param1": "value1"}}
+</tool_call>
+3. REAL ACTION ENFORCEMENT: Never merely promise, pretend, or talk in chat about modifying scripts without invoking tools. You must emit real <tool_call> blocks so Hermes will actually execute them on the NAS!
+4. You may include concise natural language explanations outside the <tool_call> tags.
 """
 
 
@@ -382,6 +385,175 @@ def build_agy_prompt(
             prompt_lines.append("你必须仅输出合法、纯净的 JSON 字符串。不要添加任何前言、解释或 Markdown 代码块标记（如 ```json）。")
 
     return "\n".join(prompt_lines).strip()
+
+
+# ==============================================================================
+# 工具调用 (Tool Call) 智能解析与流式过滤器
+# ==============================================================================
+TOOL_CALL_REGEX = re.compile(
+    r"<tool_call>\s*(.*?)\s*</tool_call>",
+    re.DOTALL | re.IGNORECASE,
+)
+
+
+def extract_tool_calls_from_text(text: str) -> tuple[list[dict[str, Any]], str]:
+    """从文本中提取 <tool_call> 标签并转换为 OpenAI 标准的 tool_calls 列表，同时返回去除标签后的纯正文."""
+    tool_calls: list[dict[str, Any]] = []
+
+    matches = list(TOOL_CALL_REGEX.finditer(text))
+    if not matches:
+        return [], text
+
+    for i, match in enumerate(matches):
+        raw_payload = match.group(1).strip()
+        if raw_payload.startswith("```"):
+            raw_payload = re.sub(r"^```(?:json|xml)?\s*", "", raw_payload)
+            raw_payload = re.sub(r"\s*```$", "", raw_payload).strip()
+
+        try:
+            data = json.loads(raw_payload)
+        except Exception:
+            continue
+
+        tool_name = ""
+        tool_args = ""
+        if isinstance(data, dict):
+            if "name" in data:
+                tool_name = str(data["name"])
+                args_val = data.get("arguments", {})
+                tool_args = (
+                    json.dumps(args_val, ensure_ascii=False)
+                    if isinstance(args_val, (dict, list))
+                    else str(args_val)
+                )
+            elif "function" in data and isinstance(data["function"], dict):
+                tool_name = str(data["function"].get("name", ""))
+                args_val = data["function"].get("arguments", {})
+                tool_args = (
+                    json.dumps(args_val, ensure_ascii=False)
+                    if isinstance(args_val, (dict, list))
+                    else str(args_val)
+                )
+
+        if tool_name:
+            tool_calls.append({
+                "index": i,
+                "id": f"call_{uuid.uuid4().hex[:12]}",
+                "type": "function",
+                "function": {
+                    "name": tool_name,
+                    "arguments": tool_args,
+                },
+            })
+
+    cleaned_text = TOOL_CALL_REGEX.sub("", text).strip()
+    return tool_calls, cleaned_text
+
+
+class StreamToolCallFilter:
+    """实时流式 SSE 工具调用过滤器:
+    实时透传普通文本，拦截并提取 <tool_call>...</tool_call> 块，将其转化为 OpenAI 标准的 tool_calls 事件.
+    """
+
+    def __init__(self) -> None:
+        self.buffer: str = ""
+        self.tool_index: int = 0
+        self.has_emitted_tool_calls: bool = False
+
+    def feed(self, chunk: str) -> list[dict[str, Any]]:
+        self.buffer += chunk
+        events: list[dict[str, Any]] = []
+
+        while self.buffer:
+            lower_buf = self.buffer.lower()
+            tag_start = lower_buf.find("<tool_call")
+
+            if tag_start == -1:
+                # 检查末尾是否可能是被截断的 <tool_call 前缀
+                safe_len = len(self.buffer)
+                for i in range(1, min(12, len(self.buffer) + 1)):
+                    tail = self.buffer[-i:].lower()
+                    if "<tool_call"[:i] == tail:
+                        safe_len = len(self.buffer) - i
+                        break
+
+                safe_text = self.buffer[:safe_len]
+                self.buffer = self.buffer[safe_len:]
+                if safe_text:
+                    events.append({"type": "content", "text": safe_text})
+                break
+            else:
+                if tag_start > 0:
+                    text_before = self.buffer[:tag_start]
+                    events.append({"type": "content", "text": text_before})
+                    self.buffer = self.buffer[tag_start:]
+
+                tag_close_match = re.search(r"</tool_call>", self.buffer, re.IGNORECASE)
+                if not tag_close_match:
+                    # 尚未完整闭合，等待下一分片
+                    break
+
+                end_pos = tag_close_match.end()
+                full_block = self.buffer[:end_pos]
+                self.buffer = self.buffer[end_pos:]
+
+                inner = re.sub(r"^<tool_call[^>]*>", "", full_block, flags=re.IGNORECASE)
+                inner = re.sub(r"</tool_call>$", "", inner, flags=re.IGNORECASE).strip()
+                if inner.startswith("```"):
+                    inner = re.sub(r"^```(?:json|xml)?\s*", "", inner)
+                    inner = re.sub(r"\s*```$", "", inner).strip()
+
+                try:
+                    data = json.loads(inner)
+                    tool_name = ""
+                    tool_args = ""
+                    if isinstance(data, dict):
+                        if "name" in data:
+                            tool_name = str(data["name"])
+                            args_val = data.get("arguments", {})
+                            tool_args = (
+                                json.dumps(args_val, ensure_ascii=False)
+                                if isinstance(args_val, (dict, list))
+                                else str(args_val)
+                            )
+                        elif "function" in data and isinstance(data["function"], dict):
+                            tool_name = str(data["function"].get("name", ""))
+                            args_val = data["function"].get("arguments", {})
+                            tool_args = (
+                                json.dumps(args_val, ensure_ascii=False)
+                                if isinstance(args_val, (dict, list))
+                                else str(args_val)
+                            )
+
+                    if tool_name:
+                        self.has_emitted_tool_calls = True
+                        events.append({
+                            "type": "tool_calls",
+                            "tool_calls": [
+                                {
+                                    "index": self.tool_index,
+                                    "id": f"call_{uuid.uuid4().hex[:12]}",
+                                    "type": "function",
+                                    "function": {
+                                        "name": tool_name,
+                                        "arguments": tool_args,
+                                    },
+                                }
+                            ],
+                        })
+                        self.tool_index += 1
+                except Exception:
+                    events.append({"type": "content", "text": full_block})
+
+        return events
+
+    def finalize(self) -> list[dict[str, Any]]:
+        events: list[dict[str, Any]] = []
+        if self.buffer:
+            remaining = self.buffer
+            self.buffer = ""
+            events.append({"type": "content", "text": remaining})
+        return events
 
 
 # ==============================================================================
@@ -837,6 +1009,7 @@ class AgyProxyHandler(http.server.BaseHTTPRequestHandler):
         final_usage = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0, "cached_tokens": 0, "thinking_tokens": 0}
         duration = 0.0
 
+        stream_filter = StreamToolCallFilter()
         try:
             for evt in run_agy_stream_generator(
                 agy_bin=self.agy_bin,
@@ -848,6 +1021,45 @@ class AgyProxyHandler(http.server.BaseHTTPRequestHandler):
             ):
                 if evt[0] == "delta":
                     delta_chunk = evt[1]
+                    for sub_evt in stream_filter.feed(delta_chunk):
+                        if sub_evt["type"] == "content":
+                            chunk_obj = {
+                                "id": response_id,
+                                "object": "chat.completion.chunk",
+                                "created": created_ts,
+                                "model": final_model,
+                                "choices": [
+                                    {
+                                        "index": 0,
+                                        "delta": {"content": sub_evt["text"]},
+                                        "finish_reason": None,
+                                    }
+                                ],
+                            }
+                            self.wfile.write(f"data: {json.dumps(chunk_obj, ensure_ascii=False)}\n\n".encode("utf-8"))
+                            self.wfile.flush()
+                        elif sub_evt["type"] == "tool_calls":
+                            chunk_obj = {
+                                "id": response_id,
+                                "object": "chat.completion.chunk",
+                                "created": created_ts,
+                                "model": final_model,
+                                "choices": [
+                                    {
+                                        "index": 0,
+                                        "delta": {"tool_calls": sub_evt["tool_calls"]},
+                                        "finish_reason": None,
+                                    }
+                                ],
+                            }
+                            self.wfile.write(f"data: {json.dumps(chunk_obj, ensure_ascii=False)}\n\n".encode("utf-8"))
+                            self.wfile.flush()
+                elif evt[0] == "done":
+                    final_usage = evt[2]
+                    duration = evt[3]
+
+            for sub_evt in stream_filter.finalize():
+                if sub_evt["type"] == "content":
                     chunk_obj = {
                         "id": response_id,
                         "object": "chat.completion.chunk",
@@ -856,16 +1068,13 @@ class AgyProxyHandler(http.server.BaseHTTPRequestHandler):
                         "choices": [
                             {
                                 "index": 0,
-                                "delta": {"content": delta_chunk},
+                                "delta": {"content": sub_evt["text"]},
                                 "finish_reason": None,
                             }
                         ],
                     }
                     self.wfile.write(f"data: {json.dumps(chunk_obj, ensure_ascii=False)}\n\n".encode("utf-8"))
                     self.wfile.flush()
-                elif evt[0] == "done":
-                    final_usage = evt[2]
-                    duration = evt[3]
 
             openai_usage = {
                 "prompt_tokens": final_usage.get("prompt_tokens", 0),
@@ -874,6 +1083,7 @@ class AgyProxyHandler(http.server.BaseHTTPRequestHandler):
             }
 
             # 最终 Stop 块
+            finish_reason = "tool_calls" if stream_filter.has_emitted_tool_calls else "stop"
             stop_chunk = {
                 "id": response_id,
                 "object": "chat.completion.chunk",
@@ -883,7 +1093,7 @@ class AgyProxyHandler(http.server.BaseHTTPRequestHandler):
                     {
                         "index": 0,
                         "delta": {},
-                        "finish_reason": "stop",
+                        "finish_reason": finish_reason,
                     }
                 ],
                 "usage": openai_usage,
@@ -894,7 +1104,8 @@ class AgyProxyHandler(http.server.BaseHTTPRequestHandler):
             self.close_connection = True
 
             tps = round(final_usage.get("completion_tokens", 0) / duration, 1) if duration > 0 else 0.0
-            print(f"[Proxy] <- 流式完成 (耗时: {duration:.2f}s, 入: {final_usage.get('prompt_tokens')}, 出: {final_usage.get('completion_tokens')}, 速率: {tps} tps)")
+            tools_info = f", 工具调用: {stream_filter.tool_index} 次" if stream_filter.has_emitted_tool_calls else ""
+            print(f"[Proxy] <- 流式完成 (耗时: {duration:.2f}s{tools_info}, 入: {final_usage.get('prompt_tokens')}, 出: {final_usage.get('completion_tokens')}, 速率: {tps} tps)")
 
             GLOBAL_STATS.record_finish(
                 model=final_model,
@@ -996,10 +1207,10 @@ class AgyProxyHandler(http.server.BaseHTTPRequestHandler):
             self._send_json_response(500, {"error": {"message": str(e), "type": "internal_error"}})
             return
 
+        tool_calls, clean_text = extract_tool_calls_from_text(output_text)
+
         if response_format and isinstance(response_format, dict) and response_format.get("type") == "json_object":
-            clean_text = extract_json_content(output_text)
-        else:
-            clean_text = output_text
+            clean_text = extract_json_content(clean_text)
 
         response_id = f"chatcmpl-{uuid.uuid4().hex[:12]}"
         created_ts = int(time.time())
@@ -1010,6 +1221,16 @@ class AgyProxyHandler(http.server.BaseHTTPRequestHandler):
             "total_tokens": usage.get("total_tokens", 0),
         }
 
+        msg_obj: dict[str, Any] = {
+            "role": "assistant",
+            "content": clean_text if clean_text else None,
+        }
+        if tool_calls:
+            msg_obj["tool_calls"] = tool_calls
+            finish_reason = "tool_calls"
+        else:
+            finish_reason = "stop"
+
         openai_response = {
             "id": response_id,
             "object": "chat.completion",
@@ -1018,11 +1239,8 @@ class AgyProxyHandler(http.server.BaseHTTPRequestHandler):
             "choices": [
                 {
                     "index": 0,
-                    "message": {
-                        "role": "assistant",
-                        "content": clean_text,
-                    },
-                    "finish_reason": "stop",
+                    "message": msg_obj,
+                    "finish_reason": finish_reason,
                 }
             ],
             "usage": openai_usage,
