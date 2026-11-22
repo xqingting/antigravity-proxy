@@ -300,25 +300,41 @@ def extract_json_content(text: str) -> str:
 
 
 def normalize_model_and_effort(model_name: str | None, effort: str | None = None) -> tuple[str, str | None]:
-    """标准化模型名称并自动补充 effort 参数，支持模型别名智能映射."""
+    """标准化模型名称并自动补充 effort 参数，支持模型别名智能映射与新模型透传."""
     if not model_name or not isinstance(model_name, str) or not model_name.strip():
         return DEFAULT_MODEL, (effort or DEFAULT_EFFORT)
 
-    raw = model_name.strip().lower()
+    raw = model_name.strip()
+    raw_lower = raw.lower()
 
     # 1. 显式支持 3.7
-    if raw in ("3.7-flash", "3 7 flash", "gemini-3.7-flash"):
+    if raw_lower in ("3.7-flash", "3 7 flash", "gemini-3.7-flash"):
         return "gemini-3.7-flash", (effort or "high")
 
     # 2. 别名表匹配
-    if raw in MODEL_ALIASES:
-        return MODEL_ALIASES[raw], (effort or DEFAULT_EFFORT)
+    if raw_lower in MODEL_ALIASES:
+        return MODEL_ALIASES[raw_lower], (effort or DEFAULT_EFFORT)
 
-    # 3. 常见模型前缀匹配（如 gpt-、claude- 等）
-    if any(raw.startswith(prefix) for prefix in ("gpt-", "claude-", "o1", "o3", "deepseek")):
+    # 3. 原生支持透传: Gemini 系列 (包括 gemini-3.8, 以及未来的 gemini-4, gemini-4-flash, gemini-4-pro 等)
+    #    以及 agy 当前支持的 claude-sonnet-4-6, claude-opus-4-6-thinking, gpt-oss-120b-medium 等
+    if (
+        raw_lower.startswith("gemini-")
+        or raw_lower.startswith("claude-sonnet-4")
+        or raw_lower.startswith("claude-opus-4")
+        or raw_lower.startswith("gpt-oss-")
+    ):
+        actual_effort = effort or DEFAULT_EFFORT
+        for suffix in ("-high", "-medium", "-low"):
+            if raw_lower.endswith(suffix):
+                raw_clean = raw[: -len(suffix)]
+                return raw_clean, suffix[1:]
+        return raw, actual_effort
+
+    # 4. 常见第三方前缀匹配（如 gpt-、claude- 等未命中的历史别名）
+    if any(raw_lower.startswith(prefix) for prefix in ("gpt-", "claude-", "o1", "o3", "deepseek")):
         return DEFAULT_MODEL, (effort or DEFAULT_EFFORT)
 
-    # 4. 默认兜底至 gemini-3.8-flash
+    # 5. 默认兜底至 gemini-3.8-flash
     return DEFAULT_MODEL, (effort or DEFAULT_EFFORT)
 
 
