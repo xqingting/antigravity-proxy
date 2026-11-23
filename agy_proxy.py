@@ -569,7 +569,7 @@ def _format_tools_for_prompt(tools: list[dict[str, Any]] | None) -> str:
     return "\n".join(lines) if len(lines) > 1 else ""
 
 
-MAX_AGY_PROMPT_CHARS = int(os.environ.get("AGY_MAX_PROMPT_CHARS") or 220000)
+MAX_AGY_PROMPT_CHARS = int(os.environ.get("AGY_MAX_PROMPT_CHARS") or 200000)
 
 
 def build_agy_prompt(
@@ -646,8 +646,8 @@ def build_agy_prompt(
             header_lines.append("")
     if system_parts:
         sys_joined = "\n".join(system_parts)
-        if len(sys_joined) > 30000:
-            sys_joined = sys_joined[:30000] + f"\n...[系统指令过长已截断，原长 {len(sys_joined)} 字符]"
+        if len(sys_joined) > 50000:
+            sys_joined = sys_joined[:50000] + f"\n...[系统指令过长已截断，原长 {len(sys_joined)} 字符]"
         header_lines.append("【系统指令 / System Instructions】")
         header_lines.append(sys_joined)
         header_lines.append("")
@@ -662,16 +662,21 @@ def build_agy_prompt(
 
     header_text = "\n".join(header_lines)
     footer_text = "\n".join(footer_lines)
-    available_budget = max(24000, MAX_AGY_PROMPT_CHARS - len(header_text) - len(footer_text) - 256)
+    available_budget = max(40000, MAX_AGY_PROMPT_CHARS - len(header_text) - len(footer_text) - 256)
 
-    # 尾部优先保留策略：保护最近 24 条消息完整，更早的历史 tool 输出先合理折叠瘦身
+    # 尾部优先保留策略：保护最近 24 条消息 100% 完整；仅当总长超预算时，先对更早的历史 tool 输出做头尾摘要折叠
     total_raw_turns_len = sum(len(t) for _, t in turn_entries)
     compacted_entries: list[str] = []
     protect_tail = 24
     cutoff_idx = max(0, len(turn_entries) - protect_tail)
+    need_soft_compact = total_raw_turns_len > available_budget
     for idx, (r, txt) in enumerate(turn_entries):
-        if idx < cutoff_idx and r == "tool" and len(txt) > 2000:
-            compacted_entries.append(txt[:900] + f"\n...[早期工具输出已折叠，原长 {len(txt)} 字符]")
+        if need_soft_compact and idx < cutoff_idx and r == "tool" and len(txt) > 1800:
+            compacted_entries.append(
+                txt[:1200]
+                + f"\n...[中间省略，早期工具输出原长 {len(txt)} 字符]...\n"
+                + txt[-300:]
+            )
         else:
             compacted_entries.append(txt)
 
