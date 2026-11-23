@@ -569,15 +569,22 @@ def _format_tools_for_prompt(tools: list[dict[str, Any]] | None) -> str:
     return "\n".join(lines) if len(lines) > 1 else ""
 
 
+MAX_AGY_PROMPT_CHARS = int(os.environ.get("AGY_MAX_PROMPT_CHARS") or 120000)
+
+
 def build_agy_prompt(
     messages: list[dict[str, Any]],
     response_format: dict[str, Any] | None = None,
     inject_hermes_directive: bool = False,
     tools: list[dict[str, Any]] | None = None,
 ) -> str:
-    """将 OpenAI 格式的 messages (含 tool_calls 与 tool 执行结果) 转换为 Antigravity prompt."""
+    """将 OpenAI 格式的 messages (含 tool_calls 与 tool 执行结果) 转换为 Antigravity prompt.
+
+    内置尾部优先预算裁剪（Tail-Priority Window Guard）：
+    防止单条超大 prompt 触发底层 CLI 约 80K token 的尾部截断而丢失最新 Tool Result。
+    """
     system_parts: list[str] = []
-    user_parts: list[str] = []
+    turn_entries: list[tuple[str, str]] = []
 
     for msg in messages:
         if not isinstance(msg, dict):
@@ -601,7 +608,7 @@ def build_agy_prompt(
             if content_str:
                 system_parts.append(content_str)
         elif role == "user":
-            user_parts.append(f"User: {content_str}")
+            turn_entries.append(("user", f"User: {content_str}"))
         elif role == "assistant":
             tc_list = msg.get("tool_calls")
             tc_blocks: list[str] = []
@@ -621,37 +628,82 @@ def build_agy_prompt(
                         tc_blocks.append(f"<tool_call>\n{payload}\n</tool_call>")
             combined = "\n".join(p for p in [content_str.strip(), "\n".join(tc_blocks)] if p)
             if combined:
-                user_parts.append(f"Assistant: {combined}")
+                turn_entries.append(("assistant", f"Assistant: {combined}"))
         elif role == "tool":
             tool_label = msg.get("name") or msg.get("tool_call_id") or "tool"
-            user_parts.append(f"Tool Result ({tool_label}):\n{content_str}")
+            turn_entries.append(("tool", f"Tool Result ({tool_label}):\n{content_str}"))
 
-    prompt_lines: list[str] = []
+    header_lines: list[str] = []
     # 仅当请求来源是 Hermes 智能体时，注入专属元指令（优先读取本机私有配置，不上传 Git）
     if inject_hermes_directive:
         directive_text, is_local = load_hermes_meta_directive()
         if is_local:
             print(f"[Proxy] [Hermes配置] 已热加载本机私有元指令 ({LOCAL_HERMES_DIRECTIVE_PATH})")
-        prompt_lines.append(directive_text)
+        header_lines.append(directive_text)
         tools_section = _format_tools_for_prompt(tools)
         if tools_section:
-            prompt_lines.append(tools_section)
-            prompt_lines.append("")
+            header_lines.append(tools_section)
+            header_lines.append("")
     if system_parts:
-        prompt_lines.append("【系统指令 / System Instructions】")
-        prompt_lines.extend(system_parts)
-        prompt_lines.append("")
+        sys_joined = "\n".join(system_parts)
+        if len(sys_joined) > 30000:
+            sys_joined = sys_joined[:30000] + f"\n...[系统指令过长已截断，原长 {len(sys_joined)} 字符]"
+        header_lines.append("【系统指令 / System Instructions】")
+        header_lines.append(sys_joined)
+        header_lines.append("")
 
-    if user_parts:
-        prompt_lines.append("【上下文与用户输入 / Context & User Prompt】")
-        prompt_lines.extend(user_parts)
-
+    footer_lines: list[str] = []
     if response_format and isinstance(response_format, dict):
         rf_type = response_format.get("type")
         if rf_type == "json_object":
-            prompt_lines.append("")
-            prompt_lines.append("【关键格式要求】")
-            prompt_lines.append("你必须仅输出合法、纯净的 JSON 字符串。不要添加任何前言、解释或 Markdown 代码块标记（如 ```json）。")
+            footer_lines.append("")
+            footer_lines.append("【关键格式要求】")
+            footer_lines.append("你必须仅输出合法、纯净的 JSON 字符串。不要添加任何前言、解释或 Markdown 代码块标记（如 ```json）。")
+
+    header_text = "\n".join(header_lines)
+    footer_text = "\n".join(footer_lines)
+    available_budget = max(24000, MAX_AGY_PROMPT_CHARS - len(header_text) - len(footer_text) - 256)
+
+    # 尾部优先保留策略：保护最近 12 条消息完整，更早的历史 tool 输出先折叠瘦身
+    total_raw_turns_len = sum(len(t) for _, t in turn_entries)
+    compacted_entries: list[str] = []
+    protect_tail = 12
+    cutoff_idx = max(0, len(turn_entries) - protect_tail)
+    for idx, (r, txt) in enumerate(turn_entries):
+        if idx < cutoff_idx and r == "tool" and len(txt) > 900:
+            compacted_entries.append(txt[:450] + f"\n...[早期工具输出已折叠，原长 {len(txt)} 字符]")
+        else:
+            compacted_entries.append(txt)
+
+    # 从最新一条消息倒序装入预算，绝对保证最新提问与最新工具执行结果不被截断
+    kept_reversed: list[str] = []
+    used_chars = 0
+    for txt in reversed(compacted_entries):
+        if used_chars + len(txt) + 1 <= available_budget:
+            kept_reversed.append(txt)
+            used_chars += len(txt) + 1
+        else:
+            # 若最新一条本身就超过预算，保底截断保留，避免对话变空
+            if not kept_reversed:
+                remain = max(4000, available_budget - 100)
+                kept_reversed.append(txt[:remain] + f"\n...[单条过长已截断，原长 {len(txt)} 字符]")
+            break
+
+    kept_entries = list(reversed(kept_reversed))
+    dropped_count = len(compacted_entries) - len(kept_entries)
+    if dropped_count > 0:
+        print(
+            f"[Proxy] [防截断保护] 原始对话 {total_raw_turns_len} 字符超预算 ({available_budget})，"
+            f"已丢弃最早期 {dropped_count} 条历史，完整保留最近 {len(kept_entries)} 条最新消息与工具结果"
+        )
+
+    prompt_lines = list(header_lines)
+    if kept_entries:
+        prompt_lines.append("【上下文与用户输入 / Context & User Prompt】")
+        if dropped_count > 0:
+            prompt_lines.append(f"[注：已自动省略更早的 {dropped_count} 条历史消息以防止上下文溢出，以下为完整最新对话与工具结果]")
+        prompt_lines.extend(kept_entries)
+    prompt_lines.extend(footer_lines)
 
     return "\n".join(prompt_lines).strip()
 
