@@ -515,8 +515,8 @@ You are serving strictly as the LLM intelligence engine for the external Hermes 
 <tool_call>
 {"name": "tool_name", "arguments": {"param1": "value1"}}
 </tool_call>
-3. REAL ACTION ENFORCEMENT: Never merely promise, pretend, or talk in chat about modifying scripts without invoking tools. You must emit real <tool_call> blocks so Hermes will actually execute them on the NAS!
-4. You may include concise natural language explanations outside the <tool_call> tags.
+3. STOP IMMEDIATELY AFTER <tool_call>: As soon as you finish emitting the <tool_call> block(s) for this turn, STOP generating immediately. NEVER write, simulate, or hallucinate "Tool Result (...)", "[HERMES_TOOL_RESULT ...]", or subsequent turns yourself! Wait for Hermes to execute the tools and send back the real results in the next request.
+4. REAL ACTION ENFORCEMENT: Never merely promise, pretend, or talk in chat about modifying scripts without invoking tools. You must emit real <tool_call> blocks so Hermes will actually execute them on the NAS!
 """
 
 
@@ -721,14 +721,24 @@ TOOL_CALL_REGEX = re.compile(
     re.DOTALL | re.IGNORECASE,
 )
 
+# 防幻觉截断正则：拦截模型在输出 <tool_call> 后自行续写伪造的 Tool Result
+HALLUCINATED_RESULT_REGEX = re.compile(
+    r"(?:^|\n)[ \t]*(?:Tool Result\s*\([^)]*\)\s*:|\[HERMES_TOOL_RESULT\b)",
+    re.IGNORECASE,
+)
+
 
 def extract_tool_calls_from_text(text: str) -> tuple[list[dict[str, Any]], str]:
-    """从文本中提取 <tool_call> 标签并转换为 OpenAI 标准的 tool_calls 列表，同时返回去除标签后的纯正文."""
+    """从文本中提取 <tool_call> 标签并转换为 OpenAI 标准的 tool_calls 列表，同时截断模型伪造的 Tool Result."""
     tool_calls: list[dict[str, Any]] = []
+
+    hallu_match = HALLUCINATED_RESULT_REGEX.search(text)
+    if hallu_match:
+        text = text[: hallu_match.start()]
 
     matches = list(TOOL_CALL_REGEX.finditer(text))
     if not matches:
-        return [], text
+        return [], text.strip()
 
     for i, match in enumerate(matches):
         raw_payload = match.group(1).strip()
@@ -778,45 +788,64 @@ def extract_tool_calls_from_text(text: str) -> tuple[list[dict[str, Any]], str]:
 
 class StreamToolCallFilter:
     """实时流式 SSE 工具调用过滤器:
-    实时透传普通文本，拦截并提取 <tool_call>...</tool_call> 块，将其转化为 OpenAI 标准的 tool_calls 事件.
+    实时透传普通文本，拦截并提取 <tool_call>...</tool_call> 块，将其转化为 OpenAI 标准的 tool_calls 事件；
+    同时内置防幻觉护栏，一旦模型自行续写伪造的 Tool Result 立即截断丢弃，避免泄露给终端用户。
     """
+
+    _GUARD_PREFIXES = ("<tool_call", "tool result (", "[hermes_tool_result")
 
     def __init__(self) -> None:
         self.buffer: str = ""
         self.tool_index: int = 0
         self.has_emitted_tool_calls: bool = False
+        self.hallucination_stopped: bool = False
+
+    def _safe_flush_len(self, buf: str) -> int:
+        safe_len = len(buf)
+        max_probe = min(24, len(buf))
+        for i in range(1, max_probe + 1):
+            tail = buf[-i:].lower()
+            for prefix in self._GUARD_PREFIXES:
+                if i <= len(prefix) and prefix.startswith(tail):
+                    return len(buf) - i
+        return safe_len
 
     def feed(self, chunk: str) -> list[dict[str, Any]]:
+        if self.hallucination_stopped:
+            return []
+
         self.buffer += chunk
         events: list[dict[str, Any]] = []
+
+        # 检查是否出现模型伪造的 Tool Result；若出现，截断其后全部内容并标记止损
+        hallu_match = HALLUCINATED_RESULT_REGEX.search(self.buffer)
+        stopped_now = False
+        if hallu_match:
+            self.buffer = self.buffer[: hallu_match.start()]
+            stopped_now = True
 
         while self.buffer:
             lower_buf = self.buffer.lower()
             tag_start = lower_buf.find("<tool_call")
 
             if tag_start == -1:
-                # 检查末尾是否可能是被截断的 <tool_call 前缀
-                safe_len = len(self.buffer)
-                for i in range(1, min(12, len(self.buffer) + 1)):
-                    tail = self.buffer[-i:].lower()
-                    if "<tool_call"[:i] == tail:
-                        safe_len = len(self.buffer) - i
-                        break
-
+                safe_len = len(self.buffer) if stopped_now else self._safe_flush_len(self.buffer)
                 safe_text = self.buffer[:safe_len]
                 self.buffer = self.buffer[safe_len:]
-                if safe_text:
+                if safe_text and not (self.has_emitted_tool_calls and not safe_text.strip()):
                     events.append({"type": "content", "text": safe_text})
                 break
             else:
                 if tag_start > 0:
                     text_before = self.buffer[:tag_start]
-                    events.append({"type": "content", "text": text_before})
+                    if not (self.has_emitted_tool_calls and not text_before.strip()):
+                        events.append({"type": "content", "text": text_before})
                     self.buffer = self.buffer[tag_start:]
 
                 tag_close_match = re.search(r"</tool_call>", self.buffer, re.IGNORECASE)
                 if not tag_close_match:
-                    # 尚未完整闭合，等待下一分片
+                    if stopped_now:
+                        self.buffer = ""
                     break
 
                 end_pos = tag_close_match.end()
@@ -871,14 +900,24 @@ class StreamToolCallFilter:
                 except Exception:
                     events.append({"type": "content", "text": full_block})
 
+        if stopped_now:
+            self.hallucination_stopped = True
+            self.buffer = ""
+            print("[Proxy] [防幻觉截断] 检测到模型试图伪造 Tool Result，已拦截丢弃后续内容，防止泄露给客户端")
+
         return events
 
     def finalize(self) -> list[dict[str, Any]]:
         events: list[dict[str, Any]] = []
-        if self.buffer:
+        if not self.hallucination_stopped and self.buffer:
             remaining = self.buffer
             self.buffer = ""
-            events.append({"type": "content", "text": remaining})
+            hallu_match = HALLUCINATED_RESULT_REGEX.search(remaining)
+            if hallu_match:
+                remaining = remaining[: hallu_match.start()]
+            if remaining and not (self.has_emitted_tool_calls and not remaining.strip()):
+                events.append({"type": "content", "text": remaining})
+        self.buffer = ""
         return events
 
 
