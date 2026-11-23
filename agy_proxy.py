@@ -539,16 +539,49 @@ def load_hermes_meta_directive() -> tuple[str, bool]:
     return LLM_API_META_DIRECTIVE, False
 
 
+def _format_tools_for_prompt(tools: list[dict[str, Any]] | None) -> str:
+    """将 OpenAI tools schema 精简格式化为清晰的工具清单，帮助模型精准输出 <tool_call>."""
+    if not tools or not isinstance(tools, list):
+        return ""
+    lines: list[str] = ["【Available Client Tools / 客户端可用工具列表】"]
+    for item in tools:
+        if not isinstance(item, dict):
+            continue
+        fn = item.get("function") if item.get("type") == "function" else item
+        if not isinstance(fn, dict):
+            continue
+        name = fn.get("name")
+        if not name:
+            continue
+        desc = " ".join(str(fn.get("description") or "").split())
+        if len(desc) > 220:
+            desc = desc[:220] + "…"
+        params = fn.get("parameters") if isinstance(fn.get("parameters"), dict) else {}
+        props = params.get("properties") if isinstance(params.get("properties"), dict) else {}
+        required = set(params.get("required") or []) if isinstance(params.get("required"), list) else set()
+        arg_specs: list[str] = []
+        for k, v in props.items():
+            ptype = v.get("type", "any") if isinstance(v, dict) else "any"
+            mark = "*" if k in required else ""
+            arg_specs.append(f"{k}{mark}:{ptype}")
+        args_summary = ", ".join(arg_specs) if arg_specs else "no params"
+        lines.append(f"- {name}({args_summary}): {desc}")
+    return "\n".join(lines) if len(lines) > 1 else ""
+
+
 def build_agy_prompt(
     messages: list[dict[str, Any]],
     response_format: dict[str, Any] | None = None,
     inject_hermes_directive: bool = False,
+    tools: list[dict[str, Any]] | None = None,
 ) -> str:
-    """将 OpenAI 格式的 messages 列表转换为 Antigravity prompt."""
+    """将 OpenAI 格式的 messages (含 tool_calls 与 tool 执行结果) 转换为 Antigravity prompt."""
     system_parts: list[str] = []
     user_parts: list[str] = []
 
     for msg in messages:
+        if not isinstance(msg, dict):
+            continue
         role = msg.get("role", "user")
         content = msg.get("content", "")
         if isinstance(content, list):
@@ -559,15 +592,39 @@ def build_agy_prompt(
                 elif isinstance(block, str):
                     text_blocks.append(block)
             content_str = "\n".join(text_blocks)
+        elif content is None:
+            content_str = ""
         else:
             content_str = str(content)
 
         if role in ("system", "developer"):
-            system_parts.append(content_str)
+            if content_str:
+                system_parts.append(content_str)
         elif role == "user":
             user_parts.append(f"User: {content_str}")
         elif role == "assistant":
-            user_parts.append(f"Assistant: {content_str}")
+            tc_list = msg.get("tool_calls")
+            tc_blocks: list[str] = []
+            if isinstance(tc_list, list):
+                for tc in tc_list:
+                    if not isinstance(tc, dict):
+                        continue
+                    fn = tc.get("function") if isinstance(tc.get("function"), dict) else {}
+                    t_name = fn.get("name")
+                    t_args = fn.get("arguments", "{}")
+                    if t_name:
+                        try:
+                            parsed_args = json.loads(t_args) if isinstance(t_args, str) else t_args
+                        except Exception:
+                            parsed_args = t_args
+                        payload = json.dumps({"name": t_name, "arguments": parsed_args}, ensure_ascii=False)
+                        tc_blocks.append(f"<tool_call>\n{payload}\n</tool_call>")
+            combined = "\n".join(p for p in [content_str.strip(), "\n".join(tc_blocks)] if p)
+            if combined:
+                user_parts.append(f"Assistant: {combined}")
+        elif role == "tool":
+            tool_label = msg.get("name") or msg.get("tool_call_id") or "tool"
+            user_parts.append(f"Tool Result ({tool_label}):\n{content_str}")
 
     prompt_lines: list[str] = []
     # 仅当请求来源是 Hermes 智能体时，注入专属元指令（优先读取本机私有配置，不上传 Git）
@@ -576,6 +633,10 @@ def build_agy_prompt(
         if is_local:
             print(f"[Proxy] [Hermes配置] 已热加载本机私有元指令 ({LOCAL_HERMES_DIRECTIVE_PATH})")
         prompt_lines.append(directive_text)
+        tools_section = _format_tools_for_prompt(tools)
+        if tools_section:
+            prompt_lines.append(tools_section)
+            prompt_lines.append("")
     if system_parts:
         prompt_lines.append("【系统指令 / System Instructions】")
         prompt_lines.extend(system_parts)
@@ -1270,6 +1331,7 @@ class AgyProxyHandler(http.server.BaseHTTPRequestHandler):
         model = req_data.get("model") or self.default_model
         effort = req_data.get("effort") or self.default_effort
         response_format = req_data.get("response_format")
+        req_tools = req_data.get("tools")
 
         custom_timeout = req_data.get("timeout")
         if not custom_timeout:
@@ -1285,11 +1347,11 @@ class AgyProxyHandler(http.server.BaseHTTPRequestHandler):
         is_hermes = self._is_hermes_client(client_ip)
 
         if is_hermes:
-            print(f"[Proxy] [Hermes防护] 来源确认为 Hermes 智能体 ({client_ip})，已注入纯 LLM 推理防护指令 (拦截本地工具调用死循环)")
+            print(f"[Proxy] [Hermes防护] 来源确认为 Hermes 智能体 ({client_ip})，已注入纯 LLM 推理防护指令 (工具数: {len(req_tools) if isinstance(req_tools, list) else 0})")
         else:
             print(f"[Proxy] 来源为常规客户端 ({client_ip or '本地'})，保持原生 Prompt (未添加防御指令)")
 
-        prompt = build_agy_prompt(messages, response_format, inject_hermes_directive=is_hermes)
+        prompt = build_agy_prompt(messages, response_format, inject_hermes_directive=is_hermes, tools=req_tools if isinstance(req_tools, list) else None)
         final_model, _ = normalize_model_and_effort(model, effort)
 
         GLOBAL_STATS.record_start()
