@@ -569,7 +569,7 @@ def _format_tools_for_prompt(tools: list[dict[str, Any]] | None) -> str:
     return "\n".join(lines) if len(lines) > 1 else ""
 
 
-MAX_AGY_PROMPT_CHARS = int(os.environ.get("AGY_MAX_PROMPT_CHARS") or 120000)
+MAX_AGY_PROMPT_CHARS = int(os.environ.get("AGY_MAX_PROMPT_CHARS") or 220000)
 
 
 def build_agy_prompt(
@@ -664,14 +664,14 @@ def build_agy_prompt(
     footer_text = "\n".join(footer_lines)
     available_budget = max(24000, MAX_AGY_PROMPT_CHARS - len(header_text) - len(footer_text) - 256)
 
-    # 尾部优先保留策略：保护最近 12 条消息完整，更早的历史 tool 输出先折叠瘦身
+    # 尾部优先保留策略：保护最近 24 条消息完整，更早的历史 tool 输出先合理折叠瘦身
     total_raw_turns_len = sum(len(t) for _, t in turn_entries)
     compacted_entries: list[str] = []
-    protect_tail = 12
+    protect_tail = 24
     cutoff_idx = max(0, len(turn_entries) - protect_tail)
     for idx, (r, txt) in enumerate(turn_entries):
-        if idx < cutoff_idx and r == "tool" and len(txt) > 900:
-            compacted_entries.append(txt[:450] + f"\n...[早期工具输出已折叠，原长 {len(txt)} 字符]")
+        if idx < cutoff_idx and r == "tool" and len(txt) > 2000:
+            compacted_entries.append(txt[:900] + f"\n...[早期工具输出已折叠，原长 {len(txt)} 字符]")
         else:
             compacted_entries.append(txt)
 
